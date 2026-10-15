@@ -1,0 +1,32 @@
+# Audio Deepfake Detection Baseline Configuration
+# Dataset: ASVspoof 2019 Logical Access (LA)
+# Model: wav2vec2-base + linear classification head
+
+# Data paths
+data_dir: "audio/data/LA"
+protocol_dir: "audio/data/LA/ASVspoof2019_LA_cm_protocols"
+output_dir: "audio/outputs"
+
+# Audio preprocessing
+sample_rate: 16000
+max_duration: 4.0  # seconds (4.0 * 16000 = 64000 samples)
+
+# Model architecture
+model_name: "facebook/wav2vec2-base"
+freeze_backbone: true  # Start frozen for fast initial training
+num_classes: 2         # 0: bonafide, 1: spoof
+
+# Training hyperparameters
+batch_size: 8
+lr_backbone: 0.00001   # 1e-5
+lr_head: 0.001         # 1e-3
+weight_decay: 0.0001   # 1e-4
+epochs: 5
+seed: 42
+
+# Experiment tracking & runtime
+wandb_project: "human-verification-audio"
+smoke_test: true
+smoke_test_size: 500
+num_workers: 2
+device: "auto"         # 'auto', 'cuda', or 'cpu'

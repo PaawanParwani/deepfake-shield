@@ -1,0 +1,27 @@
+# Configuration for FaceForensics++ Video Deepfake Detection Baseline
+data_dir: video/data/FaceForensics++/FaceForensics++_C23
+crops_dir: video/data/crops
+output_dir: video/outputs
+splits_dir: video/data/FaceForensics++/splits
+manipulation_methods:
+  - Deepfakes
+  - Face2Face
+  - FaceSwap
+  - NeuralTextures
+compression: c23
+frames_per_video: 16
+image_size: 224
+face_margin: 0.2
+model_name: efficientnet_b0
+pretrained: true
+num_classes: 2
+batch_size: 16
+lr: 1e-4
+weight_decay: 1e-4
+epochs: 3
+seed: 42
+wandb_project: human-verification-video
+smoke_test: false
+smoke_test_videos: 50
+num_workers: 2
+device: auto

@@ -1,0 +1,1674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0b0f19">
+  <title>Deepfake Shield — Real-Time Liveness & Biometrics</title>
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #111827;
+      --bg-card: rgba(17, 24, 39, 0.85);
+      --bg-glass: rgba(31, 41, 55, 0.6);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --border-focus: #6366f1;
+      --text-primary: #f9fafb;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --primary-glow: rgba(99, 102, 241, 0.35);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.25);
+      --success-border: rgba(16, 185, 129, 0.4);
+      --danger: #ef4444;
+      --danger-glow: rgba(239, 68, 68, 0.25);
+      --danger-border: rgba(239, 68, 68, 0.4);
+      --warning: #f59e0b;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      --shadow-glow: 0 0 20px var(--primary-glow);
+      --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    [data-theme="light"] {
+      --bg-primary: #f3f4f6;
+      --bg-secondary: #ffffff;
+      --bg-card: rgba(255, 255, 255, 0.95);
+      --bg-glass: rgba(243, 244, 246, 0.8);
+      --border-color: rgba(0, 0, 0, 0.1);
+      --border-focus: #4f46e5;
+      --text-primary: #111827;
+      --text-secondary: #4b5563;
+      --text-muted: #9ca3af;
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --primary-glow: rgba(79, 70, 229, 0.2);
+      --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+      background-image: 
+        radial-gradient(at 10% 10%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+        radial-gradient(at 90% 90%, rgba(16, 185, 129, 0.10) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 20px;
+      width: 100%;
+      flex: 1;
+    }
+
+    /* Top Navigation / Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border-color);
+      margin-bottom: 28px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .shield-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, #6366f1, #3b82f6);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 16px var(--primary-glow);
+      flex-shrink: 0;
+    }
+
+    .shield-icon svg {
+      width: 26px;
+      height: 26px;
+      fill: none;
+      stroke: white;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .brand-text h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-text p {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-color);
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warning);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.online {
+      background: var(--success);
+    }
+
+    .status-dot.offline {
+      background: var(--danger);
+    }
+
+    .btn-icon {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: var(--transition);
+    }
+
+    .btn-icon:hover {
+      background: var(--border-color);
+      transform: translateY(-1px);
+    }
+
+    .btn-icon svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+    }
+
+    /* Backend Config Bar */
+    .config-bar {
+      display: none;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 12px 18px;
+      margin-bottom: 24px;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.875rem;
+      animation: slideDown 0.2s ease-out;
+    }
+
+    .config-bar.show {
+      display: flex;
+    }
+
+    .config-bar input {
+      flex: 1;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+    }
+
+    .config-bar button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    /* Overall Verdict Banner */
+    .verdict-banner {
+      display: none;
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      margin-bottom: 28px;
+      backdrop-filter: blur(12px);
+      box-shadow: var(--shadow-lg);
+      animation: bannerSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      border: 2px solid transparent;
+    }
+
+    .verdict-banner.show {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .verdict-banner.verified {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(5, 150, 105, 0.05));
+      border-color: var(--success-border);
+      box-shadow: 0 0 25px var(--success-glow);
+    }
+
+    .verdict-banner.suspicious {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(185, 28, 28, 0.05));
+      border-color: var(--danger-border);
+      box-shadow: 0 0 25px var(--danger-glow);
+    }
+
+    .verdict-banner-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .verdict-banner-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .verdict-banner.verified .verdict-banner-icon {
+      background: rgba(16, 185, 129, 0.2);
+      color: var(--success);
+    }
+
+    .verdict-banner.suspicious .verdict-banner-icon {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--danger);
+    }
+
+    .verdict-banner-icon svg {
+      width: 32px;
+      height: 32px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2.2;
+    }
+
+    .verdict-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .verdict-desc {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .verdict-chips {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      padding: 6px 12px;
+      background: var(--bg-glass);
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      border: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Verification Grid */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 28px;
+    }
+
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .verdict-banner.show {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+
+    /* Card Component */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 26px;
+      box-shadow: var(--shadow-lg);
+      backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      transition: var(--transition);
+    }
+
+    .card:hover {
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .card-icon {
+      width: 42px;
+      height: 42px;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--primary);
+    }
+
+    .card-icon svg {
+      width: 22px;
+      height: 22px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+    }
+
+    .card-title-group h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+    }
+
+    .card-title-group p {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+    }
+
+    /* Dropzone */
+    .dropzone {
+      border: 2px dashed var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: var(--transition);
+      background: var(--bg-glass);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 170px;
+      position: relative;
+    }
+
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--border-focus);
+      background: rgba(99, 102, 241, 0.06);
+      transform: scale(1.005);
+    }
+
+    .dropzone-icon {
+      width: 44px;
+      height: 44px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      stroke-width: 1.8;
+    }
+
+    .dropzone-prompt {
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .dropzone-prompt span {
+      color: var(--primary);
+      text-decoration: underline;
+    }
+
+    .dropzone-hint {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    .file-input {
+      display: none;
+    }
+
+    /* File Selected State */
+    .file-preview {
+      display: none;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-top: 14px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .file-preview.show {
+      display: block;
+    }
+
+    .file-info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .file-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .file-meta svg {
+      width: 20px;
+      height: 20px;
+      color: var(--primary);
+      flex-shrink: 0;
+    }
+
+    .file-details {
+      overflow: hidden;
+    }
+
+    .file-name {
+      font-size: 0.875rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-size {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .btn-remove {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      transition: var(--transition);
+    }
+
+    .btn-remove:hover {
+      color: var(--danger);
+      background: rgba(239, 68, 68, 0.1);
+    }
+
+    .media-player-container {
+      margin-top: 10px;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      background: #000;
+    }
+
+    .media-player-container audio {
+      width: 100%;
+      height: 38px;
+      display: block;
+    }
+
+    .media-player-container video {
+      width: 100%;
+      max-height: 180px;
+      object-fit: contain;
+      display: block;
+    }
+
+    /* Action Buttons */
+    .btn-analyze {
+      width: 100%;
+      margin-top: 18px;
+      padding: 13px 20px;
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      border: none;
+      border-radius: var(--radius-md);
+      color: white;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 4px 14px var(--primary-glow);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: var(--transition);
+    }
+
+    .btn-analyze:hover:not(:disabled) {
+      background: linear-gradient(135deg, #4f46e5, #4338ca);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px var(--primary-glow);
+    }
+
+    .btn-analyze:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* Analysis Results Section */
+    .results-panel {
+      display: none;
+      margin-top: 22px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border-color);
+      animation: fadeIn 0.4s ease;
+    }
+
+    .results-panel.show {
+      display: block;
+    }
+
+    .result-badge-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .verdict-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .verdict-badge.verified {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid var(--success-border);
+    }
+
+    .verdict-badge.suspicious {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--danger);
+      border: 1px solid var(--danger-border);
+    }
+
+    .confidence-text {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .confidence-text strong {
+      color: var(--text-primary);
+      font-size: 0.95rem;
+    }
+
+    /* Score Bar */
+    .score-container {
+      margin-bottom: 16px;
+    }
+
+    .score-label-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      margin-bottom: 6px;
+      color: var(--text-secondary);
+    }
+
+    .score-bar-bg {
+      height: 10px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 9999px;
+      position: relative;
+      overflow: visible;
+    }
+
+    .score-bar-gradient {
+      height: 100%;
+      width: 100%;
+      border-radius: 9999px;
+      background: linear-gradient(90deg, #10b981 0%, #f59e0b 50%, #ef4444 100%);
+      opacity: 0.85;
+    }
+
+    .score-pointer {
+      position: absolute;
+      top: -4px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: white;
+      border: 3px solid var(--primary);
+      transform: translateX(-50%);
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.4);
+      transition: left 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .metrics-pills {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pill {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      font-size: 0.78rem;
+    }
+
+    .pill-title {
+      color: var(--text-muted);
+      margin-bottom: 2px;
+    }
+
+    .pill-value {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    /* Alert / Error / Info Messages */
+    .alert-box {
+      display: none;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      margin-top: 14px;
+      animation: fadeIn 0.25s ease;
+      line-height: 1.4;
+    }
+
+    .alert-box.show {
+      display: block;
+    }
+
+    .alert-box.warning {
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      color: #fbbf24;
+    }
+
+    .alert-box.danger {
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid var(--danger-border);
+      color: #f87171;
+    }
+
+    .alert-action-btn {
+      display: inline-block;
+      margin-top: 6px;
+      background: transparent;
+      border: 1px solid currentColor;
+      color: inherit;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border-color);
+      padding: 24px 20px;
+      text-align: center;
+      margin-top: 48px;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      background: var(--bg-primary);
+    }
+
+    .footer-badge {
+      display: inline-block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: var(--warning);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.75rem;
+    }
+
+    /* Animations */
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes bannerSlideIn {
+      from { opacity: 0; transform: translateY(-16px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Top Header -->
+    <header>
+      <div class="brand">
+        <div class="shield-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Human Verification</h1>
+          <p>AI-Powered Deepfake Detection for Voice &amp; Video</p>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <div class="status-badge" id="statusBadge" title="Backend Connection Status">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText">Checking backend...</span>
+        </div>
+
+        <button class="btn-icon" id="btnSettings" title="Configure Backend URL" aria-label="Backend Settings">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+
+        <button class="btn-icon" id="btnTheme" title="Toggle Dark/Light Mode" aria-label="Toggle Theme">
+          <svg viewBox="0 0 24 24" id="themeIcon">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Backend URL Configuration Bar -->
+    <div class="config-bar" id="configBar">
+      <label for="backendUrlInput"><strong>API Endpoint:</strong></label>
+      <input type="text" id="backendUrlInput" value="http://localhost:8000" placeholder="e.g. http://localhost:8000">
+      <button type="button" id="btnSaveConfig">Save &amp; Reconnect</button>
+    </div>
+
+    <!-- Overall Multimodal Verdict Banner -->
+    <section class="verdict-banner" id="overallBanner" aria-live="polite">
+      <div class="verdict-banner-left">
+        <div class="verdict-banner-icon" id="bannerIcon">
+          <svg viewBox="0 0 24 24" id="bannerSvg">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <div>
+          <div class="verdict-title" id="bannerTitle">VERIFIED HUMAN</div>
+          <div class="verdict-desc" id="bannerDesc">All analyzed biometric streams corroborate genuine human origin.</div>
+        </div>
+      </div>
+      <div class="verdict-chips" id="bannerChips">
+        <!-- Dynamic chips injected here -->
+      </div>
+    </section>
+
+    <!-- Verification Dual Cards Grid -->
+    <main class="grid">
+      <!-- 1. AUDIO VERIFICATION -->
+      <section class="card" aria-labelledby="audioHeader">
+        <div class="card-header">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </div>
+          <div class="card-title-group">
+            <h2 id="audioHeader">Audio Verification</h2>
+            <p>Speech spoofing detection via wav2vec2 self-supervised backbone</p>
+          </div>
+        </div>
+
+        <!-- Audio Dropzone -->
+        <div class="dropzone" id="audioDropzone" role="button" tabindex="0" aria-label="Drop audio file or click to select">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <div class="dropzone-prompt">Drop voice clip here or <span>browse</span></div>
+          <div class="dropzone-hint">Supports .wav, .flac, .mp3 &bull; Max 50 MB</div>
+          <input type="file" id="audioInput" class="file-input" accept=".wav,.flac,.mp3,audio/wav,audio/x-wav,audio/flac,audio/mpeg">
+        </div>
+
+        <!-- Audio Selected File Preview -->
+        <div class="file-preview" id="audioFilePreview">
+          <div class="file-info-row">
+            <div class="file-meta">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path d="M9 18V5l12-2v13"/>
+                <circle cx="6" cy="18" r="3"/>
+                <circle cx="18" cy="16" r="3"/>
+              </svg>
+              <div class="file-details">
+                <div class="file-name" id="audioFileName">speech_sample.wav</div>
+                <div class="file-size" id="audioFileSize">1.2 MB</div>
+              </div>
+            </div>
+            <button type="button" class="btn-remove" id="btnAudioRemove" title="Remove file" aria-label="Remove audio file">&times;</button>
+          </div>
+          <div class="media-player-container">
+            <audio id="audioPlayer" controls></audio>
+          </div>
+        </div>
+
+        <!-- Audio Action Button -->
+        <button type="button" class="btn-analyze" id="btnAnalyzeAudio" disabled>
+          <span class="btn-text">Analyze Audio</span>
+        </button>
+
+        <!-- Audio Warning/Error Banner -->
+        <div class="alert-box" id="audioAlert"></div>
+
+        <!-- Audio Results Panel -->
+        <div class="results-panel" id="audioResults">
+          <div class="result-badge-row">
+            <span class="verdict-badge verified" id="audioBadge">Verified Human</span>
+            <span class="confidence-text">Confidence: <strong id="audioConfidence">98.4%</strong></span>
+          </div>
+
+          <div class="score-container">
+            <div class="score-label-row">
+              <span>Bonafide (Real)</span>
+              <span id="audioScoreLabel">P(Spoof): 0.016</span>
+              <span>Synthetic (Spoof)</span>
+            </div>
+            <div class="score-bar-bg">
+              <div class="score-bar-gradient"></div>
+              <div class="score-pointer" id="audioPointer" style="left: 1.6%;"></div>
+            </div>
+          </div>
+
+          <div class="metrics-pills">
+            <div class="pill">
+              <div class="pill-title">Processed Duration</div>
+              <div class="pill-value" id="audioDuration">4.00s (16 kHz)</div>
+            </div>
+            <div class="pill">
+              <div class="pill-title">Backbone Architecture</div>
+              <div class="pill-value">wav2vec2-base</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. VIDEO VERIFICATION -->
+      <section class="card" aria-labelledby="videoHeader">
+        <div class="card-header">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24">
+              <polygon points="23 7 16 12 23 17 23 7"/>
+              <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+            </svg>
+          </div>
+          <div class="card-title-group">
+            <h2 id="videoHeader">Video Verification</h2>
+            <p>Face manipulation detection via MTCNN + EfficientNet-B0</p>
+          </div>
+        </div>
+
+        <!-- Video Dropzone -->
+        <div class="dropzone" id="videoDropzone" role="button" tabindex="0" aria-label="Drop video file or click to select">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <div class="dropzone-prompt">Drop video clip here or <span>browse</span></div>
+          <div class="dropzone-hint">Supports .mp4, .avi, .mov &bull; Max 50 MB</div>
+          <input type="file" id="videoInput" class="file-input" accept=".mp4,.avi,.mov,video/mp4,video/x-msvideo,video/quicktime">
+        </div>
+
+        <!-- Live Mobile Camera & Webcam Scanner Mode -->
+        <div style="margin-top: 14px; text-align: center;">
+          <button type="button" class="btn-analyze" id="btnToggleCamera" style="background: rgba(99, 102, 241, 0.2); border: 1px solid var(--primary); color: #fff; width: 100%;">
+            📷 Launch Live Camera Scanner (Phone & Webcam)
+          </button>
+        </div>
+
+        <div id="cameraScannerBox" style="display: none; margin-top: 14px; background: rgba(0,0,0,0.5); border-radius: 14px; padding: 14px; border: 1px solid var(--border-color); text-align: center;">
+          <div style="position: relative; max-width: 360px; margin: 0 auto; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 8px 24px rgba(0,0,0,0.6);">
+            <video id="liveVideo" autoplay playsinline muted style="width: 100%; display: block; transform: scaleX(-1);"></video>
+            <div id="livePill" style="position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.82rem; background: rgba(15,23,42,0.85); color: #94a3b8; border: 1px solid rgba(255,255,255,0.15); white-space: nowrap;">
+              SEARCHING FOR FACE...
+            </div>
+          </div>
+          <div style="display: flex; justify-content: center; gap: 10px; margin-top: 12px;">
+            <button type="button" class="btn-analyze" id="btnStopCamera" style="background: rgba(239, 68, 68, 0.2); border: 1px solid var(--danger); padding: 8px 18px; font-size: 0.85rem; width: auto;">
+              Stop Camera
+            </button>
+            <button type="button" class="btn-analyze" id="btnExplainCurrent" style="background: rgba(16, 185, 129, 0.2); border: 1px solid var(--success); padding: 8px 18px; font-size: 0.85rem; width: auto;">
+              🔍 Grad-CAM Explain
+            </button>
+          </div>
+        </div>
+
+        <!-- Grad-CAM Forensic Heatmap Container -->
+        <div id="explainModal" style="display: none; margin-top: 14px; background: rgba(17, 24, 39, 0.95); border: 1px solid var(--primary); border-radius: 12px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong style="color: var(--primary); font-size: 0.92rem;">Forensic Grad-CAM Artifact Analysis</strong>
+            <button type="button" id="btnCloseExplain" style="background: none; border: none; color: #fff; font-size: 1.3rem; cursor: pointer;">&times;</button>
+          </div>
+          <img id="explainHeatmapImg" style="width: 100%; max-width: 300px; display: block; margin: 0 auto; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);" alt="Forensic Heatmap">
+          <div id="explainDiagnosis" style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px; text-align: center;"></div>
+        </div>
+
+        <!-- Video Selected File Preview -->
+        <div class="file-preview" id="videoFilePreview">
+          <div class="file-info-row">
+            <div class="file-meta">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+                <line x1="7" y1="2" x2="7" y2="22"/>
+                <line x1="17" y1="2" x2="17" y2="22"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+              </svg>
+              <div class="file-details">
+                <div class="file-name" id="videoFileName">face_clip.mp4</div>
+                <div class="file-size" id="videoFileSize">4.8 MB</div>
+              </div>
+            </div>
+            <button type="button" class="btn-remove" id="btnVideoRemove" title="Remove file" aria-label="Remove video file">&times;</button>
+          </div>
+          <div class="media-player-container">
+            <video id="videoPlayer" controls playsinline></video>
+          </div>
+        </div>
+
+        <!-- Video Action Button -->
+        <button type="button" class="btn-analyze" id="btnAnalyzeVideo" disabled>
+          <span class="btn-text">Analyze Video</span>
+        </button>
+
+        <!-- Video Warning/Error Banner -->
+        <div class="alert-box" id="videoAlert"></div>
+
+        <!-- Video Results Panel -->
+        <div class="results-panel" id="videoResults">
+          <div class="result-badge-row">
+            <span class="verdict-badge verified" id="videoBadge">Verified Human</span>
+            <span class="confidence-text">Confidence: <strong id="videoConfidence">96.2%</strong></span>
+          </div>
+
+          <div class="score-container">
+            <div class="score-label-row">
+              <span>Authentic (Real)</span>
+              <span id="videoScoreLabel">P(Fake): 0.038</span>
+              <span>Manipulated (Deepfake)</span>
+            </div>
+            <div class="score-bar-bg">
+              <div class="score-bar-gradient"></div>
+              <div class="score-pointer" id="videoPointer" style="left: 3.8%;"></div>
+            </div>
+          </div>
+
+          <div class="metrics-pills">
+            <div class="pill">
+              <div class="pill-title">Frames Analyzed</div>
+              <div class="pill-value" id="videoFrames">24 facial crops</div>
+            </div>
+            <div class="pill">
+              <div class="pill-title">Backbone Architecture</div>
+              <div class="pill-value">EfficientNet-B0</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="footer-badge">Research Prototype &bull; Not for Production Use</div>
+      <p>Multi-stream deepfake verification based on wav2vec2 audio speech forensics and EfficientNet frame classification.</p>
+    </footer>
+  </div>
+
+  <!-- Inline Application Logic -->
+  <script>
+    (function () {
+      "use strict";
+
+      const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+      const ALLOWED_AUDIO = [".wav", ".flac", ".mp3"];
+      const ALLOWED_VIDEO = [".mp4", ".avi", ".mov"];
+
+      // State
+      let backendUrl = localStorage.getItem("hv_backend_url") || "http://localhost:8000";
+      let audioFile = null;
+      let videoFile = null;
+      let audioResult = null; // { p_spoof, verdict, confidence }
+      let videoResult = null; // { p_fake, verdict, confidence }
+
+      // Elements
+      const backendUrlInput = document.getElementById("backendUrlInput");
+      const btnSaveConfig = document.getElementById("btnSaveConfig");
+      const configBar = document.getElementById("configBar");
+      const btnSettings = document.getElementById("btnSettings");
+      const btnTheme = document.getElementById("btnTheme");
+      const statusDot = document.getElementById("statusDot");
+      const statusText = document.getElementById("statusText");
+
+      const overallBanner = document.getElementById("overallBanner");
+      const bannerIcon = document.getElementById("bannerIcon");
+      const bannerSvg = document.getElementById("bannerSvg");
+      const bannerTitle = document.getElementById("bannerTitle");
+      const bannerDesc = document.getElementById("bannerDesc");
+      const bannerChips = document.getElementById("bannerChips");
+
+      // Audio Elements
+      const audioDropzone = document.getElementById("audioDropzone");
+      const audioInput = document.getElementById("audioInput");
+      const audioFilePreview = document.getElementById("audioFilePreview");
+      const audioFileName = document.getElementById("audioFileName");
+      const audioFileSize = document.getElementById("audioFileSize");
+      const audioPlayer = document.getElementById("audioPlayer");
+      const btnAudioRemove = document.getElementById("btnAudioRemove");
+      const btnAnalyzeAudio = document.getElementById("btnAnalyzeAudio");
+      const audioAlert = document.getElementById("audioAlert");
+      const audioResults = document.getElementById("audioResults");
+      const audioBadge = document.getElementById("audioBadge");
+      const audioConfidence = document.getElementById("audioConfidence");
+      const audioScoreLabel = document.getElementById("audioScoreLabel");
+      const audioPointer = document.getElementById("audioPointer");
+      const audioDuration = document.getElementById("audioDuration");
+
+      // Video Elements
+      const videoDropzone = document.getElementById("videoDropzone");
+      const videoInput = document.getElementById("videoInput");
+      const videoFilePreview = document.getElementById("videoFilePreview");
+      const videoFileName = document.getElementById("videoFileName");
+      const videoFileSize = document.getElementById("videoFileSize");
+      const videoPlayer = document.getElementById("videoPlayer");
+      const btnVideoRemove = document.getElementById("btnVideoRemove");
+      const btnAnalyzeVideo = document.getElementById("btnAnalyzeVideo");
+      const videoAlert = document.getElementById("videoAlert");
+      const videoResults = document.getElementById("videoResults");
+      const videoBadge = document.getElementById("videoBadge");
+      const videoConfidence = document.getElementById("videoConfidence");
+      const videoScoreLabel = document.getElementById("videoScoreLabel");
+      const videoPointer = document.getElementById("videoPointer");
+      const videoFrames = document.getElementById("videoFrames");
+
+      // Theme toggle initialization
+      const savedTheme = localStorage.getItem("hv_theme") || "dark";
+      document.documentElement.setAttribute("data-theme", savedTheme);
+
+      btnTheme.addEventListener("click", () => {
+        const curTheme = document.documentElement.getAttribute("data-theme");
+        const nextTheme = curTheme === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", nextTheme);
+        localStorage.setItem("hv_theme", nextTheme);
+      });
+
+      // Settings toggle
+      backendUrlInput.value = backendUrl;
+      btnSettings.addEventListener("click", () => {
+        configBar.classList.toggle("show");
+      });
+
+      btnSaveConfig.addEventListener("click", () => {
+        let val = backendUrlInput.value.trim().replace(/\/+$/, "");
+        if (!val) val = "http://localhost:8000";
+        backendUrl = val;
+        localStorage.setItem("hv_backend_url", backendUrl);
+        configBar.classList.remove("show");
+        checkHealth();
+      });
+
+      function formatBytes(bytes) {
+        if (bytes === 0) return "0 Bytes";
+        const k = 1024;
+        const sizes = ["Bytes", "KB", "MB", "GB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+      }
+
+      function getExtension(filename) {
+        return filename.slice((filename.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
+      }
+
+      // Backend Health Check
+      async function checkHealth() {
+        statusDot.className = "status-dot";
+        statusText.textContent = "Connecting...";
+        try {
+          const res = await fetch(`${backendUrl}/health`, { method: "GET" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          statusDot.className = "status-dot online";
+
+          const audioReady = data.audio_model_loaded;
+          const videoReady = data.video_model_loaded;
+
+          if (audioReady && videoReady) {
+            statusText.textContent = `Backend Ready (${data.device.toUpperCase()})`;
+          } else if (audioReady || videoReady) {
+            statusText.textContent = "Partial Models Loaded";
+          } else {
+            statusText.textContent = "Online (Models Pending)";
+          }
+        } catch (err) {
+          statusDot.className = "status-dot offline";
+          statusText.textContent = "Backend Offline";
+        }
+      }
+
+      // Overall Banner Updater
+      function updateOverallBanner() {
+        if (!audioResult && !videoResult) {
+          overallBanner.classList.remove("show", "verified", "suspicious");
+          return;
+        }
+
+        const isAudioSuspicious = audioResult && audioResult.p_spoof >= 0.5;
+        const isVideoSuspicious = videoResult && videoResult.p_fake >= 0.5;
+        const isOverallSuspicious = isAudioSuspicious || isVideoSuspicious;
+
+        overallBanner.classList.remove("verified", "suspicious");
+        overallBanner.classList.add("show", isOverallSuspicious ? "suspicious" : "verified");
+
+        if (isOverallSuspicious) {
+          bannerTitle.textContent = "SUSPICIOUS MEDIA DETECTED";
+          bannerDesc.textContent = "Potential synthetic manipulation or biometric cloning flagged by neural detector.";
+          bannerSvg.innerHTML = `
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          `;
+        } else {
+          bannerTitle.textContent = "VERIFIED HUMAN";
+          bannerDesc.textContent = "All analyzed biometric streams corroborate genuine human origin.";
+          bannerSvg.innerHTML = `
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          `;
+        }
+
+        // Build chips
+        let chipsHtml = "";
+        if (audioResult) {
+          const statusStr = audioResult.p_spoof >= 0.5 ? "Spoof" : "Real";
+          const pPct = (audioResult.p_spoof * 100).toFixed(1);
+          chipsHtml += `<div class="chip"><strong>Audio:</strong> ${statusStr} (P=${pPct}%)</div>`;
+        }
+        if (videoResult) {
+          const statusStr = videoResult.p_fake >= 0.5 ? "Fake" : "Real";
+          const pPct = (videoResult.p_fake * 100).toFixed(1);
+          chipsHtml += `<div class="chip"><strong>Video:</strong> ${statusStr} (P=${pPct}%)</div>`;
+        }
+        bannerChips.innerHTML = chipsHtml;
+      }
+
+      /* ------------------------------------------------------------- */
+      /* AUDIO HANDLERS                                                */
+      /* ------------------------------------------------------------- */
+      audioDropzone.addEventListener("click", () => audioInput.click());
+
+      audioDropzone.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        audioDropzone.classList.add("dragover");
+      });
+
+      audioDropzone.addEventListener("dragleave", () => {
+        audioDropzone.classList.remove("dragover");
+      });
+
+      audioDropzone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        audioDropzone.classList.remove("dragover");
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+          handleAudioSelected(e.dataTransfer.files[0]);
+        }
+      });
+
+      audioInput.addEventListener("change", () => {
+        if (audioInput.files && audioInput.files[0]) {
+          handleAudioSelected(audioInput.files[0]);
+        }
+      });
+
+      function handleAudioSelected(file) {
+        audioAlert.classList.remove("show", "warning", "danger");
+        const ext = "." + getExtension(file.name);
+        if (!ALLOWED_AUDIO.includes(ext)) {
+          showAudioAlert(`Unsupported format "${ext}". Please upload a .wav, .flac, or .mp3 file.`, "danger");
+          return;
+        }
+        if (file.size > MAX_FILE_SIZE) {
+          showAudioAlert(`File size exceeds 50MB limit (${formatBytes(file.size)}).`, "danger");
+          return;
+        }
+
+        audioFile = file;
+        audioFileName.textContent = file.name;
+        audioFileSize.textContent = formatBytes(file.size);
+        audioPlayer.src = URL.createObjectURL(file);
+
+        audioDropzone.style.display = "none";
+        audioFilePreview.classList.add("show");
+        btnAnalyzeAudio.disabled = false;
+        audioResults.classList.remove("show");
+        audioResult = null;
+        updateOverallBanner();
+      }
+
+      btnAudioRemove.addEventListener("click", () => {
+        audioFile = null;
+        audioInput.value = "";
+        audioPlayer.pause();
+        audioPlayer.src = "";
+        audioFilePreview.classList.remove("show");
+        audioDropzone.style.display = "flex";
+        btnAnalyzeAudio.disabled = true;
+        audioAlert.classList.remove("show");
+        audioResults.classList.remove("show");
+        audioResult = null;
+        updateOverallBanner();
+      });
+
+      function showAudioAlert(msg, type = "warning", allowSim = false) {
+        audioAlert.className = `alert-box show ${type}`;
+        if (allowSim) {
+          audioAlert.innerHTML = `<div>${msg}</div><button type="button" class="alert-action-btn" id="btnAudioSim">Run Demo Simulation</button>`;
+          document.getElementById("btnAudioSim").onclick = simulateAudioAnalysis;
+        } else {
+          audioAlert.textContent = msg;
+        }
+      }
+
+      btnAnalyzeAudio.addEventListener("click", async () => {
+        if (!audioFile) return;
+
+        btnAnalyzeAudio.disabled = true;
+        btnAnalyzeAudio.innerHTML = `<span class="spinner"></span> Analyzing Voice Biometrics...`;
+        audioAlert.classList.remove("show");
+
+        const formData = new FormData();
+        formData.append("file", audioFile);
+
+        try {
+          const res = await fetch(`${backendUrl}/predict/audio`, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            let errorMsg = `HTTP Error ${res.status}`;
+            try {
+              const errData = await res.json();
+              if (errData.detail) errorMsg = errData.detail;
+            } catch (_) {}
+
+            if (res.status === 503 || errorMsg.toLowerCase().includes("not loaded")) {
+              showAudioAlert(`Audio model is not yet loaded on server: ${errorMsg}`, "warning", true);
+            } else {
+              showAudioAlert(`Inference failed: ${errorMsg}`, "danger");
+            }
+            return;
+          }
+
+          const data = await res.json();
+          renderAudioSuccess(data);
+        } catch (err) {
+          showAudioAlert(`Failed to connect to backend at ${backendUrl}. Check server or run demo simulation.`, "warning", true);
+        } finally {
+          btnAnalyzeAudio.disabled = false;
+          btnAnalyzeAudio.innerHTML = `<span class="btn-text">Analyze Audio</span>`;
+        }
+      });
+
+      function simulateAudioAnalysis() {
+        audioAlert.classList.remove("show");
+        const mockSpoof = Math.random() < 0.5 ? 0.042 : 0.885;
+        const mockData = {
+          p_spoof: mockSpoof,
+          verdict: mockSpoof >= 0.5 ? "suspicious" : "real",
+          confidence: Math.round(Math.max(mockSpoof, 1 - mockSpoof) * 1000) / 10,
+          duration_seconds: 4.00,
+          filename: audioFile ? audioFile.name : "demo_sample.wav",
+        };
+        renderAudioSuccess(mockData);
+      }
+
+      function renderAudioSuccess(data) {
+        audioResult = data;
+        const isSuspicious = data.verdict === "suspicious" || data.p_spoof >= 0.5;
+
+        audioBadge.className = `verdict-badge ${isSuspicious ? "suspicious" : "verified"}`;
+        audioBadge.textContent = isSuspicious ? "Suspicious" : "Verified Human";
+        audioConfidence.textContent = `${data.confidence}%`;
+
+        const pct = Math.min(Math.max(data.p_spoof * 100, 0), 100);
+        audioScoreLabel.textContent = `P(Spoof): ${data.p_spoof.toFixed(4)}`;
+        audioPointer.style.left = `${pct}%`;
+
+        if (data.duration_seconds) {
+          audioDuration.textContent = `${data.duration_seconds}s (16 kHz)`;
+        }
+
+        audioResults.classList.add("show");
+        updateOverallBanner();
+      }
+
+      /* ------------------------------------------------------------- */
+      /* VIDEO HANDLERS                                                */
+      /* ------------------------------------------------------------- */
+      videoDropzone.addEventListener("click", () => videoInput.click());
+
+      videoDropzone.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        videoDropzone.classList.add("dragover");
+      });
+
+      videoDropzone.addEventListener("dragleave", () => {
+        videoDropzone.classList.remove("dragover");
+      });
+
+      videoDropzone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        videoDropzone.classList.remove("dragover");
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+          handleVideoSelected(e.dataTransfer.files[0]);
+        }
+      });
+
+      videoInput.addEventListener("change", () => {
+        if (videoInput.files && videoInput.files[0]) {
+          handleVideoSelected(videoInput.files[0]);
+        }
+      });
+
+      function handleVideoSelected(file) {
+        videoAlert.classList.remove("show", "warning", "danger");
+        const ext = "." + getExtension(file.name);
+        if (!ALLOWED_VIDEO.includes(ext)) {
+          showVideoAlert(`Unsupported format "${ext}". Please upload a .mp4, .avi, or .mov video.`, "danger");
+          return;
+        }
+        if (file.size > MAX_FILE_SIZE) {
+          showVideoAlert(`File size exceeds 50MB limit (${formatBytes(file.size)}).`, "danger");
+          return;
+        }
+
+        videoFile = file;
+        videoFileName.textContent = file.name;
+        videoFileSize.textContent = formatBytes(file.size);
+        videoPlayer.src = URL.createObjectURL(file);
+
+        videoDropzone.style.display = "none";
+        videoFilePreview.classList.add("show");
+        btnAnalyzeVideo.disabled = false;
+        videoResults.classList.remove("show");
+        videoResult = null;
+        updateOverallBanner();
+      }
+
+      btnVideoRemove.addEventListener("click", () => {
+        videoFile = null;
+        videoInput.value = "";
+        videoPlayer.pause();
+        videoPlayer.src = "";
+        videoFilePreview.classList.remove("show");
+        videoDropzone.style.display = "flex";
+        btnAnalyzeVideo.disabled = true;
+        videoAlert.classList.remove("show");
+        videoResults.classList.remove("show");
+        videoResult = null;
+        updateOverallBanner();
+      });
+
+      function showVideoAlert(msg, type = "warning", allowSim = false) {
+        videoAlert.className = `alert-box show ${type}`;
+        if (allowSim) {
+          videoAlert.innerHTML = `<div>${msg}</div><button type="button" class="alert-action-btn" id="btnVideoSim">Run Demo Simulation</button>`;
+          document.getElementById("btnVideoSim").onclick = simulateVideoAnalysis;
+        } else {
+          videoAlert.textContent = msg;
+        }
+      }
+
+      btnAnalyzeVideo.addEventListener("click", async () => {
+        if (!videoFile) return;
+
+        btnAnalyzeVideo.disabled = true;
+        btnAnalyzeVideo.innerHTML = `<span class="spinner"></span> Extracting Faces &amp; Evaluating...`;
+        videoAlert.classList.remove("show");
+
+        const formData = new FormData();
+        formData.append("file", videoFile);
+
+        try {
+          const res = await fetch(`${backendUrl}/predict/video`, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            let errorMsg = `HTTP Error ${res.status}`;
+            try {
+              const errData = await res.json();
+              if (errData.detail) errorMsg = errData.detail;
+            } catch (_) {}
+
+            if (res.status === 503 || errorMsg.toLowerCase().includes("not loaded")) {
+              showVideoAlert(`Video model is not yet loaded on server: ${errorMsg}`, "warning", true);
+            } else {
+              showVideoAlert(`Inference failed: ${errorMsg}`, "danger");
+            }
+            return;
+          }
+
+          const data = await res.json();
+          renderVideoSuccess(data);
+        } catch (err) {
+          showVideoAlert(`Failed to connect to backend at ${backendUrl}. Check server or run demo simulation.`, "warning", true);
+        } finally {
+          btnAnalyzeVideo.disabled = false;
+          btnAnalyzeVideo.innerHTML = `<span class="btn-text">Analyze Video</span>`;
+        }
+      });
+
+      function simulateVideoAnalysis() {
+        videoAlert.classList.remove("show");
+        const mockFake = Math.random() < 0.5 ? 0.027 : 0.931;
+        const mockData = {
+          p_fake: mockFake,
+          verdict: mockFake >= 0.5 ? "suspicious" : "real",
+          confidence: Math.round(Math.max(mockFake, 1 - mockFake) * 1000) / 10,
+          frames_used: 16,
+          filename: videoFile ? videoFile.name : "demo_clip.mp4",
+        };
+        renderVideoSuccess(mockData);
+      }
+
+      function renderVideoSuccess(data) {
+        videoResult = data;
+        const isSuspicious = data.verdict === "suspicious" || data.p_fake >= 0.5;
+
+        videoBadge.className = `verdict-badge ${isSuspicious ? "suspicious" : "verified"}`;
+        videoBadge.textContent = isSuspicious ? "Suspicious" : "Verified Human";
+        videoConfidence.textContent = `${data.confidence}%`;
+
+        const pct = Math.min(Math.max(data.p_fake * 100, 0), 100);
+        videoScoreLabel.textContent = `P(Fake): ${data.p_fake.toFixed(4)}`;
+        videoPointer.style.left = `${pct}%`;
+
+        if (data.frames_used) {
+          videoFrames.textContent = `${data.frames_used} facial crops`;
+        }
+
+        videoResults.classList.add("show");
+        updateOverallBanner();
+      }
+
+      // --- LIVE MOBILE & WEBCAM SCANNER LOGIC ---
+      let cameraStream = null;
+      let cameraInterval = null;
+      let lastFrameBase64 = null;
+
+      const btnToggleCamera = document.getElementById("btnToggleCamera");
+      const btnStopCamera = document.getElementById("btnStopCamera");
+      const cameraScannerBox = document.getElementById("cameraScannerBox");
+      const liveVideo = document.getElementById("liveVideo");
+      const livePill = document.getElementById("livePill");
+      const btnExplainCurrent = document.getElementById("btnExplainCurrent");
+      const explainModal = document.getElementById("explainModal");
+      const explainHeatmapImg = document.getElementById("explainHeatmapImg");
+      const explainDiagnosis = document.getElementById("explainDiagnosis");
+      const btnCloseExplain = document.getElementById("btnCloseExplain");
+
+      if (btnToggleCamera) {
+        btnToggleCamera.addEventListener("click", async () => {
+          try {
+            cameraStream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+            });
+            liveVideo.srcObject = cameraStream;
+            cameraScannerBox.style.display = "block";
+            btnToggleCamera.style.display = "none";
+
+            const offscreen = document.createElement("canvas");
+            const offCtx = offscreen.getContext("2d");
+
+            cameraInterval = setInterval(async () => {
+              if (liveVideo.readyState < 2) return;
+              offscreen.width = liveVideo.videoWidth || 480;
+              offscreen.height = liveVideo.videoHeight || 360;
+              offCtx.drawImage(liveVideo, 0, 0);
+              const b64 = offscreen.toDataURL("image/jpeg", 0.75);
+              lastFrameBase64 = b64;
+
+              try {
+                const res = await fetch(`${backendUrl}/predict/frame`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ image_base64: b64 })
+                });
+                if (res.ok) {
+                  const data = await res.json();
+                  if (!data.face_detected) {
+                    livePill.textContent = "SEARCHING FOR FACE...";
+                    livePill.style.background = "rgba(15,23,42,0.85)";
+                    livePill.style.color = "#94a3b8";
+                    livePill.style.borderColor = "rgba(255,255,255,0.15)";
+                  } else if (data.verdict === "suspicious") {
+                    livePill.textContent = `🔴 DEEPFAKE DETECTED (${data.confidence}%)`;
+                    livePill.style.background = "rgba(239,68,68,0.9)";
+                    livePill.style.color = "#fff";
+                    livePill.style.borderColor = "#ef4444";
+                  } else {
+                    livePill.textContent = `🟢 VERIFIED HUMAN (${data.confidence}%)`;
+                    livePill.style.background = "rgba(16,185,129,0.9)";
+                    livePill.style.color = "#fff";
+                    livePill.style.borderColor = "#10b981";
+                  }
+                }
+              } catch (_) {}
+            }, 450);
+          } catch (err) {
+            alert("Camera permission denied or camera not found: " + err.message);
+          }
+        });
+
+        btnStopCamera.addEventListener("click", () => {
+          if (cameraStream) {
+            cameraStream.getTracks().forEach(t => t.stop());
+            cameraStream = null;
+          }
+          if (cameraInterval) clearInterval(cameraInterval);
+          cameraScannerBox.style.display = "none";
+          btnToggleCamera.style.display = "block";
+        });
+
+        btnExplainCurrent.addEventListener("click", async () => {
+          if (!lastFrameBase64) return;
+          explainModal.style.display = "block";
+          explainDiagnosis.textContent = "Computing Grad-CAM convolutional feature map activations...";
+          try {
+            const res = await fetch(`${backendUrl}/explain/frame`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ image_base64: lastFrameBase64 })
+            });
+            if (res.ok) {
+              const data = await res.json();
+              explainHeatmapImg.src = data.heatmap_base64;
+              explainDiagnosis.innerHTML = `<strong>Dominant Anomaly:</strong> ${data.dominant_artifact_region.replace(/_/g, ' ')} (Peak: ${data.peak_activation})`;
+            }
+          } catch (err) {
+            explainDiagnosis.textContent = "Explainability error: " + err.message;
+          }
+        });
+
+        btnCloseExplain.addEventListener("click", () => {
+          explainModal.style.display = "none";
+        });
+      }
+
+      // Initial check on load
+      checkHealth();
+    })();
+  </script>
+</body>
+</html>

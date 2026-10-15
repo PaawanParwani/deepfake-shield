@@ -1,0 +1,251 @@
+/* Human Verification — Real-Time Meeting Shield Stylesheet */
+
+/* Floating Participant Badge */
+.hv-hud-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+/* Authentic State */
+.hv-hud-badge.hv-authentic {
+  background: rgba(6, 78, 59, 0.85);
+  border: 1px solid rgba(52, 211, 153, 0.8);
+  color: #ecfdf5;
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.35);
+}
+
+.hv-hud-badge.hv-authentic .hv-pulse-dot {
+  background-color: #34d399;
+  box-shadow: 0 0 10px #34d399;
+}
+
+/* Suspicious / Deepfake State */
+.hv-hud-badge.hv-suspicious {
+  background: rgba(127, 29, 29, 0.9);
+  border: 1px solid rgba(248, 113, 113, 0.9);
+  color: #fef2f2;
+  animation: hv-alert-pulse 1.2s infinite;
+}
+
+.hv-hud-badge.hv-suspicious .hv-pulse-dot {
+  background-color: #f87171;
+  box-shadow: 0 0 12px #ef4444;
+}
+
+/* Scanning / Initial State */
+.hv-hud-badge.hv-scanning {
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  color: #cbd5e1;
+}
+
+.hv-hud-badge.hv-scanning .hv-pulse-dot {
+  background-color: #94a3b8;
+}
+
+/* No Face Detected / Searching State */
+.hv-hud-badge.hv-no-face {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(100, 116, 139, 0.5);
+  color: #94a3b8;
+}
+
+.hv-hud-badge.hv-no-face .hv-pulse-dot {
+  background-color: #64748b;
+  box-shadow: 0 0 6px rgba(100, 116, 139, 0.6);
+}
+
+.hv-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.hv-hud-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hv-hud-score {
+  opacity: 0.9;
+  font-weight: 600;
+  font-size: 10px;
+}
+
+/* High-Definition Biometric Face Bounding Box */
+.hv-face-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 999998;
+  border: 2px solid #10b981;
+  border-radius: 10px;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4), inset 0 0 15px rgba(16, 185, 129, 0.1);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-sizing: border-box;
+}
+
+/* Cyberpunk Corner Accents on Face Box */
+.hv-face-overlay::before,
+.hv-face-overlay::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: #34d399;
+  border-style: solid;
+}
+
+.hv-face-overlay::before {
+  top: -3px;
+  left: -3px;
+  border-width: 3px 0 0 3px;
+}
+
+.hv-face-overlay::after {
+  bottom: -3px;
+  right: -3px;
+  border-width: 0 3px 3px 0;
+}
+
+.hv-face-overlay.hv-suspicious-box {
+  border: 2px solid #ef4444;
+  box-shadow: 0 0 25px rgba(239, 68, 68, 0.6), inset 0 0 20px rgba(239, 68, 68, 0.2);
+  animation: hv-box-glow 0.8s infinite alternate;
+}
+
+.hv-face-overlay.hv-suspicious-box::before,
+.hv-face-overlay.hv-suspicious-box::after {
+  border-color: #f87171;
+}
+
+/* Draggable Control Pill in Google Meet */
+.hv-dock-pill {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 9999px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 20px rgba(99, 102, 241, 0.35);
+  color: #f8fafc;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transition: box-shadow 0.2s, background 0.2s;
+}
+
+.hv-dock-pill.hv-dragging {
+  cursor: grabbing !important;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.8), 0 0 30px rgba(99, 102, 241, 0.6);
+  transform: scale(1.02);
+}
+
+.hv-drag-handle {
+  display: flex;
+  align-items: center;
+  color: #64748b;
+  font-size: 14px;
+  letter-spacing: -2px;
+  cursor: grab;
+}
+
+.hv-shield-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hv-shield-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: #6366f1;
+}
+
+.hv-status-label {
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+}
+
+.hv-status-label span.hv-sub {
+  font-size: 10px;
+  color: #34d399;
+  font-weight: 500;
+}
+
+.hv-btn-toggle {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.hv-btn-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.hv-btn-toggle.hv-active {
+  background: #6366f1;
+  border-color: #818cf8;
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
+}
+
+/* Animations */
+@keyframes hv-alert-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+@keyframes hv-box-glow {
+  from {
+    border-color: #ef4444;
+    box-shadow: 0 0 15px rgba(239, 68, 68, 0.5);
+  }
+  to {
+    border-color: #f87171;
+    box-shadow: 0 0 30px rgba(239, 68, 68, 0.8);
+  }
+}

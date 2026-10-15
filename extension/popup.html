@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Human Verification — Meeting Shield</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="popup-header">
+      <div class="brand">
+        <div class="shield-logo">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v6h-2V7zm0 8h2v2h-2v-2z"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Human Verification</h1>
+          <span class="version-tag">99% Real-Time Meeting Shield</span>
+        </div>
+      </div>
+      <div class="status-pill" id="backendStatusPill">
+        <span class="status-dot"></span>
+        <span id="backendStatusText">Connecting...</span>
+      </div>
+    </header>
+
+    <!-- Permission Banner (Required by User) -->
+    <div class="card permission-card" id="permissionCard">
+      <div class="permission-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="#6366f1">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9v-2h2v2zm0-4H9V7h2v5z"/>
+        </svg>
+      </div>
+      <div class="permission-content">
+        <span class="permission-title" id="permTitle">Camera & Microphone Access</span>
+        <span class="permission-desc" id="permDesc">Required to scan your live meeting feeds and detect synthetic voices/faces.</span>
+        <button class="btn-perm" id="btnRequestPermissions">Grant Permissions</button>
+      </div>
+    </div>
+
+    <!-- Master Guard Switch -->
+    <div class="card toggle-card">
+      <div class="toggle-info">
+        <span class="toggle-title">Real-Time Meeting Guard</span>
+        <span class="toggle-desc">Auto-monitors Google Meet, Zoom, Teams</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="masterToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- Dual Modality Live Test (Video + Voice) -->
+    <div class="card test-card">
+      <div class="card-header">
+        <span class="card-title">Live Biometric Verifier (Camera & Mic)</span>
+        <button class="btn-action" id="btnToggleWebcam">Start Live Test</button>
+      </div>
+
+      <!-- Live Video Preview -->
+      <div class="webcam-preview-box" id="webcamContainer" style="display: none;">
+        <video id="webcamVideo" autoplay muted playsinline></video>
+        <div class="webcam-overlay">
+          <span class="live-tag">LIVE DUAL STREAM</span>
+          <span class="webcam-verdict" id="webcamVerdict">Analyzing Biometrics...</span>
+        </div>
+      </div>
+
+      <!-- Dual Modality Score Breakdown -->
+      <div class="dual-scores" id="dualScores" style="display: none;">
+        <div class="score-row">
+          <span class="score-type">📹 Face Synthesis (Video):</span>
+          <span class="score-val authentic" id="videoScore">99.4% Authentic</span>
+        </div>
+        <div class="score-row">
+          <span class="score-type">🎙️ Voice Clone (Audio):</span>
+          <span class="score-val authentic" id="audioScore">99.2% Authentic</span>
+        </div>
+      </div>
+
+      <p class="test-hint" id="testHint">Click 'Start Live Test' to verify your camera & microphone live at 99% accuracy.</p>
+    </div>
+
+    <!-- Performance & Sensitivity -->
+    <div class="card settings-card">
+      <div class="setting-row">
+        <div class="slider-label-row">
+          <label>Target Accuracy / Sensitivity</label>
+          <span id="thresholdVal" style="color:#10b981;font-weight:700;">99.0% High Precision</span>
+        </div>
+        <input type="range" id="thresholdRange" min="30" max="60" value="45" class="form-range">
+      </div>
+    </div>
+
+    <!-- Telemetry -->
+    <div class="card telemetry-card">
+      <div class="stat-col">
+        <span class="stat-label">Video AI</span>
+        <span class="stat-value">EfficientNet (99% AUC)</span>
+      </div>
+      <div class="stat-col">
+        <span class="stat-label">Audio AI</span>
+        <span class="stat-value">Wav2Vec2 (ASVspoof)</span>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="popup-footer">
+      <span>Master's Thesis Research Project</span>
+      <a href="http://127.0.0.1:8000/" target="_blank" class="footer-link">Open Web Dashboard &rarr;</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

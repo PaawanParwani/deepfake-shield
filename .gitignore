@@ -1,0 +1,67 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Environment and secrets
+.env
+.env.local
+*.env
+
+# Large datasets & raw data
+audio/data/
+video/data/
+data/
+
+# Model checkpoints and weights
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+*.onnx.data
+*.safetensors
+
+# Experiment tracking & outputs
+wandb/
+.wandb
+outputs/*
+!outputs/.gitkeep
+audio/outputs/*
+!audio/outputs/.gitkeep
+video/outputs/*
+!video/outputs/.gitkeep
+!video/outputs/best_model.pt
+
+# Distribution and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+eggs/
+*.egg
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# IDEs and OS artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.log
+deploy/cloudflared.exe
