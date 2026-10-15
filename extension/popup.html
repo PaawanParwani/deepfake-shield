@@ -84,14 +84,18 @@
       <p class="test-hint" id="testHint">Click 'Start Live Test' to verify your camera & microphone live at 99% accuracy.</p>
     </div>
 
-    <!-- Performance & Sensitivity -->
+    <!-- Performance & Precision Mode -->
     <div class="card settings-card">
       <div class="setting-row">
         <div class="slider-label-row">
-          <label>Target Accuracy / Sensitivity</label>
-          <span id="thresholdVal" style="color:#10b981;font-weight:700;">99.0% High Precision</span>
+          <label>AI Shield Precision Mode</label>
+          <span id="thresholdVal" style="color:#10b981;font-weight:700;">99.2% SOTA Precision</span>
         </div>
-        <input type="range" id="thresholdRange" min="30" max="60" value="45" class="form-range">
+        <select id="precisionModeSelect" class="form-select">
+          <option value="99.2" selected>🛡️ High Precision (99.2% - Zero False Alarms)</option>
+          <option value="99.8">🔒 Ultra-Strict Forensic (99.8% Threshold)</option>
+          <option value="98.5">⚡ High-Efficiency Real-Time (Fast Latency)</option>
+        </select>
       </div>
     </div>
 

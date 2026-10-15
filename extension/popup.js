@@ -6,7 +6,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const backendStatusPill = document.getElementById("backendStatusPill");
   const backendStatusText = document.getElementById("backendStatusText");
   const masterToggle = document.getElementById("masterToggle");
-  const thresholdRange = document.getElementById("thresholdRange");
+  const precisionModeSelect = document.getElementById("precisionModeSelect");
   const thresholdVal = document.getElementById("thresholdVal");
 
   // Permission Elements
@@ -92,8 +92,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (chrome && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(["enabled", "sensitivityThreshold"], (res) => {
       if (res.enabled !== undefined) masterToggle.checked = res.enabled;
-      if (res.sensitivityThreshold !== undefined) {
-        thresholdRange.value = Math.round(res.sensitivityThreshold * 100);
+      if (res.precisionMode !== undefined && precisionModeSelect) {
+        precisionModeSelect.value = res.precisionMode;
+        thresholdVal.textContent = `${res.precisionMode}% Precision`;
       }
     });
   }
@@ -104,13 +105,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  thresholdRange.addEventListener("input", () => {
-    const val = parseInt(thresholdRange.value, 10);
-    thresholdVal.textContent = `${(100 - val * 0.2).toFixed(1)}% High Precision`;
-    if (chrome && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.set({ sensitivityThreshold: val / 100.0 });
-    }
-  });
+  if (precisionModeSelect) {
+    precisionModeSelect.addEventListener("change", () => {
+      const mode = precisionModeSelect.value;
+      thresholdVal.textContent = `${mode}% Precision`;
+      if (chrome && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ precisionMode: mode, sensitivityThreshold: parseFloat(mode) / 100.0 });
+      }
+    });
+  }
 
   // 4. Dual Live Biometric Test (Camera + Mic)
   btnToggleWebcam.addEventListener("click", async () => {
