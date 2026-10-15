@@ -5,9 +5,13 @@ services:
     region: oregon
     plan: free
     buildCommand: pip install --upgrade pip && pip install -r deploy/render/requirements.txt
-    startCommand: uvicorn demo.backend.app:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn demo.backend.app:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: PORT
         value: 10000
+      - key: LIGHTWEIGHT_AUDIO
+        value: "1"
+      - key: MALLOC_TRIM_THRESHOLD_
+        value: "65536"

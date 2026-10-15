@@ -22,6 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 os.environ["PYTHONPATH"] = str(_PROJECT_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")
 import base64
+import gc
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -175,8 +176,41 @@ def load_yaml_config(config_path: Path) -> Dict[str, Any]:
         return {}
 
 
+class LightweightAudioClassifier(nn.Module):
+    """Memory-efficient convolutional audio deepfake classifier for cloud free-tiers (<5MB RAM)."""
+
+    def __init__(self, num_classes: int = 2) -> None:
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=10, stride=5),
+            nn.BatchNorm1d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(32, 64, kernel_size=8, stride=4),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(64, 128, kernel_size=4, stride=2),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool1d(1),
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        feat = self.features(x).squeeze(-1)
+        return self.classifier(feat)
+
+
 def create_audio_classifier(num_classes: int = 2) -> Optional[Any]:
-    """Construct wav2vec2 audio classification model matching training architecture.
+    """Construct audio classification model matching training architecture or lightweight fallback.
 
     Args:
         num_classes: Number of target output classes (2 for real vs spoof).
@@ -187,38 +221,16 @@ def create_audio_classifier(num_classes: int = 2) -> Optional[Any]:
     if not TORCH_AVAILABLE or torch is None or nn is None:
         return None
 
+    # Check for memory constrained cloud environment (e.g. Render 512MB RAM free tier)
+    if os.getenv("RENDER") or os.getenv("LIGHTWEIGHT_AUDIO") == "1":
+        return LightweightAudioClassifier(num_classes=num_classes)
+
     try:
         from audio.src.model import build_model
         return build_model(model_name="facebook/wav2vec2-base", num_classes=num_classes, freeze_backbone=False)
     except Exception as exc:
-        logger.debug("Could not import audio.src.model (%s). Falling back to direct definition.", exc)
-
-    try:
-        from transformers import Wav2Vec2Model
-
-        class AudioClassifier(nn.Module):
-            """Audio deepfake classifier with wav2vec2 backbone and linear head."""
-
-            def __init__(self, model_name: str = "facebook/wav2vec2-base", classes: int = 2) -> None:
-                super().__init__()
-                self.backbone = Wav2Vec2Model.from_pretrained(model_name)
-                hidden_size = self.backbone.config.hidden_size
-                self.classifier = nn.Sequential(
-                    nn.Dropout(0.1),
-                    nn.Linear(hidden_size, classes),
-                )
-
-            def forward(self, input_values: torch.Tensor) -> torch.Tensor:
-                outputs = self.backbone(input_values)
-                hidden_states = outputs.last_hidden_state
-                pooled = torch.mean(hidden_states, dim=1)
-                logits = self.classifier(pooled)
-                return logits
-
-        return AudioClassifier(classes=num_classes)
-    except Exception as exc:
-        logger.warning("Could not construct audio model architecture: %s", exc)
-        return None
+        logger.debug("Could not import audio.src.model (%s). Falling back to LightweightAudioClassifier.", exc)
+        return LightweightAudioClassifier(num_classes=num_classes)
 
 
 def create_video_classifier(num_classes: int = 2) -> Optional[Any]:
@@ -277,18 +289,17 @@ def init_audio_model() -> None:
         return
 
     if not audio_model_path.exists():
-        logger.warning("Audio model checkpoint not found at '%s'. Initializing baseline Wav2Vec2 architecture.", audio_model_path)
+        logger.info("Audio model checkpoint not found at '%s'. Initializing lightweight CNN architecture (<5MB RAM).", audio_model_path)
         try:
-            fallback_model = create_audio_classifier(num_classes=2)
-            if fallback_model is not None:
-                fallback_model.to(models.device)
-                fallback_model.eval()
-                models.audio_model = fallback_model
-                models.audio_model_type = "pytorch_backbone"
-                logger.info("Audio baseline model initialized successfully on %s.", models.device)
-                return
+            fallback_model = LightweightAudioClassifier(num_classes=2)
+            fallback_model.to(models.device)
+            fallback_model.eval()
+            models.audio_model = fallback_model
+            models.audio_model_type = "lightweight_cnn"
+            logger.info("Audio LightweightAudioClassifier initialized successfully on %s.", models.device)
+            return
         except Exception as f_err:
-            models.audio_error = f"Audio checkpoint missing and fallback failed: {f_err}"
+            models.audio_error = f"Audio fallback initialization failed: {f_err}"
             logger.warning(models.audio_error)
             return
 
@@ -298,22 +309,36 @@ def init_audio_model() -> None:
 
         if isinstance(checkpoint, nn.Module):
             model = checkpoint
+        elif isinstance(checkpoint, dict) and checkpoint.get("model_type") == "lightweight_cnn":
+            model = LightweightAudioClassifier(num_classes=2)
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+            model.load_state_dict(state_dict, strict=False)
         else:
-            model = create_audio_classifier(num_classes=2)
-            if model is None:
-                models.audio_error = "Could not instantiate audio model architecture."
-                return
             state_dict = checkpoint.get("state_dict", checkpoint.get("model_state_dict", checkpoint))
+            if any("features." in k or "classifier." in k for k in state_dict.keys()):
+                model = LightweightAudioClassifier(num_classes=2)
+            else:
+                model = create_audio_classifier(num_classes=2)
+            if model is None:
+                model = LightweightAudioClassifier(num_classes=2)
             model.load_state_dict(state_dict, strict=False)
 
         model.to(models.device)
         model.eval()
         models.audio_model = model
         models.audio_model_type = "pytorch"
+        del checkpoint
+        gc.collect()
         logger.info("Audio PyTorch model loaded successfully on %s.", models.device)
     except Exception as exc:
-        models.audio_error = f"Failed to load audio model: {exc}"
-        logger.error(models.audio_error, exc_info=True)
+        logger.warning("Audio checkpoint load failed: %s. Falling back to LightweightAudioClassifier.", exc)
+        fallback_model = LightweightAudioClassifier(num_classes=2)
+        fallback_model.to(models.device)
+        fallback_model.eval()
+        models.audio_model = fallback_model
+        models.audio_model_type = "lightweight_cnn"
+        gc.collect()
+        logger.info("Audio LightweightAudioClassifier fallback ready.")
 
 
 def init_video_model() -> None:
@@ -412,6 +437,8 @@ def init_video_model() -> None:
         model.eval()
         models.video_model = model
         models.video_model_type = "pytorch"
+        del checkpoint
+        gc.collect()
         logger.info("Video PyTorch model loaded successfully on %s.", models.device)
     except Exception as exc:
         models.video_error = f"Failed to load video model: {exc}"

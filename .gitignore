@@ -39,6 +39,8 @@ outputs/*
 !outputs/.gitkeep
 audio/outputs/*
 !audio/outputs/.gitkeep
+!audio/outputs/best_model.pt
+!audio/outputs/best_model_lightweight.pt
 video/outputs/*
 !video/outputs/.gitkeep
 !video/outputs/best_model.pt

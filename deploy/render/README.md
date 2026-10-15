@@ -23,7 +23,7 @@ Render provides free cloud hosting for FastAPI web services with automated HTTPS
      ```
    - **Start Command:**
      ```bash
-     uvicorn demo.backend.app:app --host 0.0.0.0 --port $PORT
+     uvicorn demo.backend.app:app --host 0.0.0.0 --port $PORT --workers 1
      ```
    - **Instance Type:** `Free` (0.1 CPU, 512 MB RAM)
 4. Click **Create Web Service**.
