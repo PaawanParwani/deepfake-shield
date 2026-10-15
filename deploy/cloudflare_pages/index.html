@@ -1195,7 +1195,10 @@
         statusDot.className = "status-dot";
         statusText.textContent = "Connecting...";
         try {
-          const res = await fetch(`${backendUrl}/health`, { method: "GET" });
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          const res = await fetch(`${backendUrl}/health`, { method: "GET", signal: controller.signal });
+          clearTimeout(timeoutId);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
           statusDot.className = "status-dot online";
