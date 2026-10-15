@@ -1093,10 +1093,14 @@
       const ALLOWED_AUDIO = [".wav", ".flac", ".mp3"];
       const ALLOWED_VIDEO = [".mp4", ".avi", ".mov"];
 
-      // State - Auto-detect Cloudflare/Production vs Local development
-      const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-      const defaultBackend = isLocalHost ? "http://localhost:8000" : "https://deepfake-shield-vyaq.onrender.com";
-      let backendUrl = localStorage.getItem("hv_backend_url") || defaultBackend;
+      // Production Cloud Backend (Single unified endpoint)
+      const LIVE_BACKEND_URL = "https://deepfake-shield-vyaq.onrender.com";
+      let storedUrl = localStorage.getItem("hv_backend_url");
+      if (!storedUrl || storedUrl.includes("localhost") || storedUrl.includes("127.0.0.1") || storedUrl.includes("deepfake-shield-backend")) {
+        storedUrl = LIVE_BACKEND_URL;
+        localStorage.setItem("hv_backend_url", LIVE_BACKEND_URL);
+      }
+      let backendUrl = storedUrl;
       let audioFile = null;
       let videoFile = null;
       let audioResult = null; // { p_spoof, verdict, confidence }
