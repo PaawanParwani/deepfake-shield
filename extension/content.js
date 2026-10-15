@@ -9,7 +9,7 @@
 
   let config = {
     enabled: true,
-    backendUrl: "http://127.0.0.1:8000",
+    backendUrl: "https://deepfake-shield-vyaq.onrender.com",
     scanIntervalMs: 3000,
     sensitivityThreshold: 0.65
   };

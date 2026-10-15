@@ -4,7 +4,7 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log("[Human Verification] Extension installed and active.");
   chrome.storage.local.set({
     enabled: true,
-    backendUrl: "http://127.0.0.1:8000",
+    backendUrl: "https://deepfake-shield-vyaq.onrender.com",
     scanIntervalMs: 1500,
     sensitivityThreshold: 0.50,
     alertNotifications: true,

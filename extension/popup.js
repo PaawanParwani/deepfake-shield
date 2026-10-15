@@ -1,6 +1,6 @@
 // Popup Script for Human Verification Extension
 document.addEventListener("DOMContentLoaded", () => {
-  const backendUrl = "http://127.0.0.1:8000";
+  let backendUrl = "https://deepfake-shield-vyaq.onrender.com";
 
   // Elements
   const backendStatusPill = document.getElementById("backendStatusPill");
@@ -30,11 +30,11 @@ document.addEventListener("DOMContentLoaded", () => {
   let isAnalyzing = false;
   let audioContext = null;
 
-  // 1. Check Backend Connectivity with strict 1.5s timeout (never hang popup)
+  // 1. Check Backend Connectivity
   async function checkBackendHealth() {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1500);
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
       const resp = await fetch(`${backendUrl}/health`, { method: "GET", signal: controller.signal });
       clearTimeout(timeoutId);
       if (resp.ok) {
@@ -49,7 +49,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  checkBackendHealth();
+  if (chrome && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(["backendUrl"], (res) => {
+      if (res && res.backendUrl) {
+        backendUrl = res.backendUrl;
+      }
+      checkBackendHealth();
+    });
+  } else {
+    checkBackendHealth();
+  }
 
   // 2. Check Permissions State (Fast storage check, no blocking query calls)
   function checkPermissions() {
