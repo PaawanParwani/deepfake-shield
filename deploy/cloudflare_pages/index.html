@@ -838,7 +838,7 @@
     <!-- Backend URL Configuration Bar -->
     <div class="config-bar" id="configBar">
       <label for="backendUrlInput"><strong>API Endpoint:</strong></label>
-      <input type="text" id="backendUrlInput" value="https://deepfake-shield-backend.onrender.com" placeholder="e.g. https://deepfake-shield-backend.onrender.com">
+      <input type="text" id="backendUrlInput" value="https://deepfake-shield-vyaq.onrender.com" placeholder="e.g. https://deepfake-shield-vyaq.onrender.com">
       <button type="button" id="btnSaveConfig">Save &amp; Reconnect</button>
     </div>
 
@@ -1095,7 +1095,7 @@
 
       // State - Auto-detect Cloudflare/Production vs Local development
       const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-      const defaultBackend = isLocalHost ? "http://localhost:8000" : "https://deepfake-shield-backend.onrender.com";
+      const defaultBackend = isLocalHost ? "http://localhost:8000" : "https://deepfake-shield-vyaq.onrender.com";
       let backendUrl = localStorage.getItem("hv_backend_url") || defaultBackend;
       let audioFile = null;
       let videoFile = null;
