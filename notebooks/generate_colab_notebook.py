@@ -288,6 +288,59 @@ cells = [
             "\n",
             "print('🎉 All weights safely persisted and ready for production web/mobile deployment!')"
         ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## 8. Host Live GPU Backend for Mobile & PC (Free Cloudflare Tunnel)"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# Install Cloudflare Tunnel binary\n",
+            "!wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb\n",
+            "!dpkg -i cloudflared-linux-amd64.deb\n",
+            "\n",
+            "import os, re, subprocess, time\n",
+            "\n",
+            "# Ensure we are in project directory with dependencies installed\n",
+            "if not os.path.exists('demo'):\n",
+            "    if not os.path.exists('/content/deepfake-shield'):\n",
+            "        !git clone https://github.com/PaawanParwani/deepfake-shield.git /content/deepfake-shield\n",
+            "    %cd /content/deepfake-shield\n",
+            "    !pip install -q -r deploy/render/requirements.txt\n",
+            "\n",
+            "# Start FastAPI backend on GPU\n",
+            "server = subprocess.Popen(['uvicorn', 'demo.backend.app:app', '--host', '0.0.0.0', '--port', '8000'])\n",
+            "time.sleep(3)\n",
+            "\n",
+            "# Start Cloudflare Tunnel to expose Colab GPU\n",
+            "tunnel = subprocess.Popen(['cloudflared', 'tunnel', '--url', 'http://localhost:8000'], stderr=subprocess.PIPE, text=True)\n",
+            "\n",
+            "public_url = None\n",
+            "for line in tunnel.stderr:\n",
+            "    match = re.search(r'https://[a-zA-Z0-9-]+\\.trycloudflare\\.com', line)\n",
+            "    if match:\n",
+            "        public_url = match.group(0)\n",
+            "        break\n",
+            "\n",
+            "if public_url:\n",
+            "    print('=' * 68)\n",
+            "    print('🚀 YOUR LIVE GOOGLE COLAB GPU BACKEND IS ONLINE!')\n",
+            "    print(f'👉 Public URL: {public_url}')\n",
+            "    print('=' * 68)\n",
+            "    print('Connect both your PC and iPhone:')\n",
+            "    print(f'1. On PC: Open https://deepfake-shield.pages.dev -> Settings -> Paste {public_url}')\n",
+            "    print(f'2. On iPhone: Open https://deepfake-shield.pages.dev -> Settings -> Paste {public_url}')\n",
+            "    print('=' * 68)\n",
+            "else:\n",
+            "    print('Tunnel starting... please check cloudflared logs.')"
+        ]
     }
 ]
 
