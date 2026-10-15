@@ -838,7 +838,7 @@
     <!-- Backend URL Configuration Bar -->
     <div class="config-bar" id="configBar">
       <label for="backendUrlInput"><strong>API Endpoint:</strong></label>
-      <input type="text" id="backendUrlInput" value="http://localhost:8000" placeholder="e.g. http://localhost:8000">
+      <input type="text" id="backendUrlInput" value="https://deepfake-shield-backend.onrender.com" placeholder="e.g. https://deepfake-shield-backend.onrender.com">
       <button type="button" id="btnSaveConfig">Save &amp; Reconnect</button>
     </div>
 
@@ -1093,8 +1093,10 @@
       const ALLOWED_AUDIO = [".wav", ".flac", ".mp3"];
       const ALLOWED_VIDEO = [".mp4", ".avi", ".mov"];
 
-      // State
-      let backendUrl = localStorage.getItem("hv_backend_url") || "http://localhost:8000";
+      // State - Auto-detect Cloudflare/Production vs Local development
+      const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      const defaultBackend = isLocalHost ? "http://localhost:8000" : "https://deepfake-shield-backend.onrender.com";
+      let backendUrl = localStorage.getItem("hv_backend_url") || defaultBackend;
       let audioFile = null;
       let videoFile = null;
       let audioResult = null; // { p_spoof, verdict, confidence }
@@ -1169,7 +1171,7 @@
 
       btnSaveConfig.addEventListener("click", () => {
         let val = backendUrlInput.value.trim().replace(/\/+$/, "");
-        if (!val) val = "http://localhost:8000";
+        if (!val) val = defaultBackend;
         backendUrl = val;
         localStorage.setItem("hv_backend_url", backendUrl);
         configBar.classList.remove("show");
