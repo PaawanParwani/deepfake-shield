@@ -782,6 +782,9 @@ def health_check() -> Dict[str, Any]:
     """
     return {
         "status": "ok",
+        "version": "v2.1-optimized-frames",
+        "max_video_frames": MAX_VIDEO_FRAMES,
+        "mtcnn_enabled": models.mtcnn is not None,
         "audio_model_loaded": models.audio_model is not None or models.audio_onnx_session is not None,
         "video_model_loaded": models.video_model is not None or models.video_onnx_session is not None,
         "audio_backend": models.audio_model_type,
