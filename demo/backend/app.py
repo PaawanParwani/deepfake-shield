@@ -176,6 +176,38 @@ def load_yaml_config(config_path: Path) -> Dict[str, Any]:
         return {}
 
 
+class RNNAudioClassifier(nn.Module):
+    """Recurrent Neural Network (CRNN: Strided Conv1d + Bidirectional GRU) for audio deepfake detection."""
+
+    def __init__(self, hidden_dim: int = 64, num_classes: int = 2) -> None:
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=16, stride=8),
+            nn.GroupNorm(4, 32),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=8, stride=4),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.Conv1d(64, hidden_dim, kernel_size=4, stride=2),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(),
+        )
+        self.rnn = nn.GRU(hidden_dim, hidden_dim, num_layers=1, batch_first=True, bidirectional=True)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim * 2, 64),
+            nn.ReLU(),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        feat = self.conv(x).transpose(1, 2)
+        out, _ = self.rnn(feat)
+        pooled = torch.mean(out, dim=1)
+        return self.fc(pooled)
+
+
 class LightweightAudioClassifier(nn.Module):
     """Memory-efficient convolutional audio deepfake classifier for cloud free-tiers (<5MB RAM)."""
 
@@ -210,7 +242,7 @@ class LightweightAudioClassifier(nn.Module):
 
 
 def create_audio_classifier(num_classes: int = 2) -> Optional[Any]:
-    """Construct audio classification model matching training architecture or lightweight fallback.
+    """Construct recurrent audio classification model (CRNN-GRU).
 
     Args:
         num_classes: Number of target output classes (2 for real vs spoof).
@@ -221,16 +253,7 @@ def create_audio_classifier(num_classes: int = 2) -> Optional[Any]:
     if not TORCH_AVAILABLE or torch is None or nn is None:
         return None
 
-    # Check for memory constrained cloud environment (e.g. Render 512MB RAM free tier)
-    if os.getenv("RENDER") or os.getenv("LIGHTWEIGHT_AUDIO") == "1":
-        return LightweightAudioClassifier(num_classes=num_classes)
-
-    try:
-        from audio.src.model import build_model
-        return build_model(model_name="facebook/wav2vec2-base", num_classes=num_classes, freeze_backbone=False)
-    except Exception as exc:
-        logger.debug("Could not import audio.src.model (%s). Falling back to LightweightAudioClassifier.", exc)
-        return LightweightAudioClassifier(num_classes=num_classes)
+    return RNNAudioClassifier(num_classes=num_classes)
 
 
 def create_video_classifier(num_classes: int = 2) -> Optional[Any]:
@@ -289,14 +312,14 @@ def init_audio_model() -> None:
         return
 
     if not audio_model_path.exists():
-        logger.info("Audio model checkpoint not found at '%s'. Initializing lightweight CNN architecture (<5MB RAM).", audio_model_path)
+        logger.info("Audio model checkpoint not found at '%s'. Initializing CRNN-GRU architecture (<5MB RAM).", audio_model_path)
         try:
-            fallback_model = LightweightAudioClassifier(num_classes=2)
+            fallback_model = RNNAudioClassifier(num_classes=2)
             fallback_model.to(models.device)
             fallback_model.eval()
             models.audio_model = fallback_model
-            models.audio_model_type = "lightweight_cnn"
-            logger.info("Audio LightweightAudioClassifier initialized successfully on %s.", models.device)
+            models.audio_model_type = "recurrent_rnn_gru"
+            logger.info("Audio RNNAudioClassifier initialized successfully on %s.", models.device)
             return
         except Exception as f_err:
             models.audio_error = f"Audio fallback initialization failed: {f_err}"
@@ -309,36 +332,41 @@ def init_audio_model() -> None:
 
         if isinstance(checkpoint, nn.Module):
             model = checkpoint
-        elif isinstance(checkpoint, dict) and checkpoint.get("model_type") == "lightweight_cnn":
-            model = LightweightAudioClassifier(num_classes=2)
+        elif isinstance(checkpoint, dict) and "rnn" in str(checkpoint.get("model_type", "")).lower():
+            model = RNNAudioClassifier(num_classes=2)
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             model.load_state_dict(state_dict, strict=False)
+            models.audio_model_type = "recurrent_rnn_gru"
         else:
             state_dict = checkpoint.get("state_dict", checkpoint.get("model_state_dict", checkpoint))
-            if any("features." in k or "classifier." in k for k in state_dict.keys()):
+            if any("rnn." in k or "conv." in k for k in state_dict.keys()):
+                model = RNNAudioClassifier(num_classes=2)
+                models.audio_model_type = "recurrent_rnn_gru"
+            elif any("features." in k for k in state_dict.keys()):
                 model = LightweightAudioClassifier(num_classes=2)
+                models.audio_model_type = "lightweight_cnn"
             else:
-                model = create_audio_classifier(num_classes=2)
-            if model is None:
-                model = LightweightAudioClassifier(num_classes=2)
+                model = RNNAudioClassifier(num_classes=2)
+                models.audio_model_type = "recurrent_rnn_gru"
             model.load_state_dict(state_dict, strict=False)
 
         model.to(models.device)
         model.eval()
         models.audio_model = model
-        models.audio_model_type = "pytorch"
+        if models.audio_model_type is None:
+            models.audio_model_type = "recurrent_rnn_gru" if isinstance(model, RNNAudioClassifier) else "pytorch"
         del checkpoint
         gc.collect()
-        logger.info("Audio PyTorch model loaded successfully on %s.", models.device)
+        logger.info("Audio %s model loaded successfully on %s.", models.audio_model_type, models.device)
     except Exception as exc:
-        logger.warning("Audio checkpoint load failed: %s. Falling back to LightweightAudioClassifier.", exc)
-        fallback_model = LightweightAudioClassifier(num_classes=2)
+        logger.warning("Audio checkpoint load failed: %s. Falling back to RNNAudioClassifier.", exc)
+        fallback_model = RNNAudioClassifier(num_classes=2)
         fallback_model.to(models.device)
         fallback_model.eval()
         models.audio_model = fallback_model
-        models.audio_model_type = "lightweight_cnn"
+        models.audio_model_type = "recurrent_rnn_gru"
         gc.collect()
-        logger.info("Audio LightweightAudioClassifier fallback ready.")
+        logger.info("Audio RNNAudioClassifier fallback ready.")
 
 
 def init_video_model() -> None:
@@ -353,20 +381,20 @@ def init_video_model() -> None:
     models.video_error = None
     models.mtcnn = None
 
-    # Check if in memory-constrained environment (Render Free Tier 512MB RAM)
-    skip_mtcnn = bool(os.getenv("RENDER") or os.getenv("LIGHTWEIGHT_VIDEO") == "1")
+    # MTCNN multi-face detector initialization (keep_all=True for N-face concurrent tracking)
+    skip_mtcnn = bool(os.getenv("SKIP_MTCNN") == "1")
     if skip_mtcnn:
-        logger.info("Render/Lightweight environment detected: omitting MTCNN to save 150MB+ RAM. Using high-speed geometric face cropping.")
+        logger.info("SKIP_MTCNN flag active: using high-speed geometric face cropping.")
     elif MTCNN_AVAILABLE and MTCNN is not None and TORCH_AVAILABLE and torch is not None:
         try:
             models.mtcnn = MTCNN(
                 image_size=VIDEO_IMAGE_SIZE,
                 margin=20,
-                keep_all=False,
+                keep_all=True,
                 post_process=False,
                 device=models.device
             )
-            logger.info("MTCNN face detector initialized on %s.", models.device)
+            logger.info("MTCNN multi-face detector initialized on %s (keep_all=True).", models.device)
         except Exception as exc:
             logger.warning("Could not initialize MTCNN face detector: %s", exc)
 
@@ -788,7 +816,10 @@ def health_check() -> Dict[str, Any]:
     """
     return {
         "status": "ok",
-        "version": "v2.1-optimized-frames",
+        "version": "v2.5-rnn-multiface",
+        "audio_model": "CRNN-BiGRU",
+        "audio_architecture": "Recurrent Neural Network (Conv1d + BiGRU)",
+        "multi_face_support": True,
         "max_video_frames": MAX_VIDEO_FRAMES,
         "mtcnn_enabled": models.mtcnn is not None,
         "audio_model_loaded": models.audio_model is not None or models.audio_onnx_session is not None,
@@ -1001,34 +1032,39 @@ async def predict_frame(
 
     face_detected = False
     bounding_box: Optional[List[int]] = None
-    face_crop: Optional[np.ndarray] = None
+    faces_list: List[Dict[str, Any]] = []
+
+    imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
+    imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
+
+    valid_face_crops: List[Dict[str, Any]] = []
 
     if models.mtcnn is not None:
         try:
             boxes, probs, landmarks = models.mtcnn.detect(frame_rgb, landmarks=True)
             if boxes is not None and len(boxes) > 0:
-                valid_candidates = []
+                raw_candidates = []
                 for i, box in enumerate(boxes):
                     prob = probs[i] if probs is not None and len(probs) > i else 1.0
                     lm = landmarks[i] if landmarks is not None and len(landmarks) > i else None
-                    if prob is not None and prob >= 0.55:
+                    if prob is not None and prob >= 0.50:
                         bx1, by1, bx2, by2 = box.astype(int)
                         bw, bh = bx2 - bx1, by2 - by1
                         if bw >= 20 and bh >= 20:
-                            valid_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
+                            raw_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
 
-                if valid_candidates:
-                    # Select largest face (primary video call participant)
-                    valid_candidates.sort(key=lambda item: item[0], reverse=True)
-                    _, best_box, _, best_lm = valid_candidates[0]
-                    bx1, by1, bx2, by2 = best_box
+                # Sort by area descending so primary/largest face is Target #1
+                raw_candidates.sort(key=lambda item: item[0], reverse=True)
+
+                for idx, (area, box, prob, lm) in enumerate(raw_candidates):
+                    bx1, by1, bx2, by2 = box
                     bw, bh = bx2 - bx1, by2 - by1
 
-                    # 1. Biometric Bounding Box for UI (includes head & hair)
+                    # 1. UI Bounding Box with natural head/forehead margins
                     ui_margin_x = int(bw * 0.15)
                     ui_margin_top = int(bh * 0.30)
                     ui_margin_bottom = int(bh * 0.12)
-                    bounding_box = [
+                    ui_box = [
                         int(max(0, bx1 - ui_margin_x)),
                         int(max(0, by1 - ui_margin_top)),
                         int(min(w, bx2 + ui_margin_x)),
@@ -1046,7 +1082,6 @@ async def predict_frame(
                     sq_x2 = cx + half
                     sq_y2 = cy + half
 
-                    # Handle frame boundary clipping with replicate border padding
                     pad_left = max(0, -sq_x1)
                     pad_top = max(0, -sq_y1)
                     pad_right = max(0, sq_x2 - w)
@@ -1054,22 +1089,47 @@ async def predict_frame(
 
                     if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
                         padded = cv2.copyMakeBorder(frame_rgb, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
-                        face_crop = padded[sq_y1 + pad_top : sq_y2 + pad_top, sq_x1 + pad_left : sq_x2 + pad_left]
+                        crop = padded[sq_y1 + pad_top : sq_y2 + pad_top, sq_x1 + pad_left : sq_x2 + pad_left]
                     else:
-                        face_crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
+                        crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
 
-                    if face_crop is not None and face_crop.size > 0:
-                        face_detected = True
-                        if best_lm is not None and models.physio_tracker is not None:
+                    if crop is not None and crop.size > 0:
+                        # Generate compact base64 thumbnail for UI target gallery
+                        thumb_b64 = None
+                        try:
+                            thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
+                            _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                            thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
+                        except Exception:
+                            pass
+
+                        resized = cv2.resize(crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+                        norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
+                        transposed = np.transpose(norm_face, (2, 0, 1))
+
+                        valid_face_crops.append({
+                            "ui_box": ui_box,
+                            "raw_box": box,
+                            "crop": crop,
+                            "transposed": transposed,
+                            "thumbnail": thumb_b64,
+                            "center": [cx, cy],
+                            "size": [int(bw), int(bh)],
+                            "prob": prob,
+                            "lm": lm,
+                        })
+
+                        # Update physiological tracker on primary face if present
+                        if idx == 0 and lm is not None and models.physio_tracker is not None:
                             try:
-                                models.physio_tracker.update(frame_bgr, best_lm)
+                                models.physio_tracker.update(frame_bgr, lm)
                             except Exception as p_err:
                                 logger.debug("Physiological update error: %s", p_err)
         except Exception as exc:
-            logger.debug("MTCNN live detection exception: %s", exc)
+            logger.debug("MTCNN multi-face detection exception: %s", exc)
 
-    # High-speed geometric face localization fallback when MTCNN is skipped (e.g. Render/Cloud free-tier)
-    if not face_detected or face_crop is None or face_crop.size == 0:
+    # High-speed geometric center fallback if no MTCNN faces were detected
+    if not valid_face_crops:
         if models.mtcnn is None:
             crop_dim = min(h, w)
             center_x = w // 2
@@ -1077,59 +1137,107 @@ async def predict_frame(
             sq_y1 = max(0, int(h * 0.05)) if h > w else 0
             sq_x2 = min(w, sq_x1 + crop_dim)
             sq_y2 = min(h, sq_y1 + crop_dim)
-            face_crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
-            if face_crop is not None and face_crop.size > 0:
-                face_detected = True
-                bounding_box = [int(w * 0.15), int(h * 0.05), int(w * 0.85), int(h * 0.85)]
+            crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
+            if crop is not None and crop.size > 0:
+                thumb_b64 = None
+                try:
+                    thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
+                    _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
+                except Exception:
+                    pass
 
-    # CRITICAL SAFETY: If no face detected, NEVER classify background noise as a deepfake!
-    if not face_detected or face_crop is None or face_crop.size == 0:
+                resized = cv2.resize(crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+                norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
+                transposed = np.transpose(norm_face, (2, 0, 1))
+
+                valid_face_crops.append({
+                    "ui_box": [int(w * 0.15), int(h * 0.05), int(w * 0.85), int(h * 0.85)],
+                    "raw_box": [sq_x1, sq_y1, sq_x2, sq_y2],
+                    "crop": crop,
+                    "transposed": transposed,
+                    "thumbnail": thumb_b64,
+                    "center": [center_x, int((sq_y1 + sq_y2) / 2)],
+                    "size": [crop_dim, crop_dim],
+                    "prob": 0.9,
+                    "lm": None,
+                })
+
+    # CRITICAL SAFETY: If zero human faces detected in frame, return no_face immediately
+    if not valid_face_crops:
         latency_ms = round((time.time() - start_time) * 1000.0, 1)
         return {
             "p_fake": 0.0,
             "verdict": "no_face",
             "confidence": 0.0,
             "face_detected": False,
+            "face_count": 0,
             "bounding_box": None,
+            "faces": [],
+            "auto_focus": {
+                "status": "searching",
+                "active_targets": 0,
+                "targets": [],
+            },
             "frame_width": w,
             "frame_height": h,
             "latency_ms": latency_ms,
             "message": "No human face detected in video frame.",
         }
 
-    resized = cv2.resize(face_crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
-    imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
-    imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
-    norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
-    transposed = np.transpose(norm_face, (2, 0, 1))
-    tensor_input = np.expand_dims(transposed, axis=0).astype(np.float32)
+    # BATCHED INFERENCE ACROSS ALL N FACES CONCURRENTLY
+    face_count = len(valid_face_crops)
+    batch_tensor = np.stack([c["transposed"] for c in valid_face_crops], axis=0).astype(np.float32)
 
-    p_fake = 0.0
+    probs_fake = [0.0] * face_count
     if models.video_onnx_session is not None:
         input_name = models.video_onnx_session.get_inputs()[0].name
-        outputs = models.video_onnx_session.run(None, {input_name: tensor_input})
+        outputs = models.video_onnx_session.run(None, {input_name: batch_tensor})
         logits = outputs[0]
         exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
         probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
-        p_fake = float(probs[0, 1])
+        probs_fake = probs[:, 1].tolist()
     elif models.video_model is not None and torch is not None:
         with torch.no_grad():
-            t = torch.from_numpy(tensor_input).to(models.device)
+            t = torch.from_numpy(batch_tensor).to(models.device)
             logits = models.video_model(t)
             probs = F.softmax(logits, dim=-1)
-            p_fake = float(probs[0, 1].item())
+            probs_fake = probs[:, 1].cpu().tolist()
 
-    p_fake = float(np.clip(p_fake, 0.0, 1.0))
+    for idx, (c_info, raw_p_fake) in enumerate(zip(valid_face_crops, probs_fake)):
+        p_f = float(np.clip(raw_p_fake, 0.0, 1.0))
+        is_f = p_f >= 0.65
+        v_verdict = "suspicious" if is_f else "authentic"
+        if is_f:
+            conf = round(min(99.6, max(95.0, 95.0 + (p_f - 0.65) * 12.0)), 1)
+        else:
+            conf = round(min(99.6, max(95.0, 95.0 + (0.65 - p_f) * 7.0)), 1)
 
-    # Live meeting verification: require strong synthetic evidence to prevent false alarms on real webcam
-    is_fake = p_fake >= 0.65
-    verdict = "suspicious" if is_fake else "authentic"
+        face_obj = {
+            "face_id": f"target_{idx + 1}",
+            "label": f"Target #{idx + 1}",
+            "bounding_box": [int(v) for v in c_info["ui_box"]],
+            "raw_box": [int(v) for v in c_info["raw_box"]],
+            "p_fake": round(float(p_f), 4),
+            "verdict": str(v_verdict),
+            "confidence": float(conf),
+            "center": [int(v) for v in c_info["center"]],
+            "size": [int(v) for v in c_info["size"]],
+            "thumbnail": c_info["thumbnail"],
+        }
+        faces_list.append(face_obj)
 
-    # High-precision confidence calibration
-    if is_fake:
-        confidence = round(min(99.6, max(95.0, 95.0 + (p_fake - 0.65) * 12.0)), 1)
+    face_detected = True
+    bounding_box = [int(v) for v in faces_list[0]["bounding_box"]]
+    max_p_fake = float(max(f["p_fake"] for f in faces_list))
+    has_fake = any(f["verdict"] == "suspicious" for f in faces_list)
+    overall_verdict = "suspicious" if has_fake else "authentic"
+
+    # Overall confidence
+    if has_fake:
+        overall_confidence = float(max(f["confidence"] for f in faces_list if f["verdict"] == "suspicious"))
     else:
-        confidence = round(min(99.6, max(95.0, 95.0 + (0.65 - p_fake) * 7.0)), 1)
+        overall_confidence = float(max(f["confidence"] for f in faces_list))
 
     latency_ms = round((time.time() - start_time) * 1000.0, 1)
 
@@ -1137,19 +1245,26 @@ async def predict_frame(
     if models.physio_tracker is not None and face_detected:
         try:
             bio_data = models.physio_tracker.compute_biological_consistency()
-            # Autonomous Self-Training Replay Buffer registration
-            if models.self_training_buffer is not None and face_crop is not None:
+            if models.self_training_buffer is not None and len(valid_face_crops) > 0:
                 p_bio = float(bio_data.get("p_bonafide_bio", 0.5))
-                models.self_training_buffer.add_sample(face_crop, p_bio=p_bio, p_cnn=p_fake)
+                models.self_training_buffer.add_sample(valid_face_crops[0]["crop"], p_bio=p_bio, p_cnn=max_p_fake)
         except Exception as b_err:
             logger.debug("Biological score error: %s", b_err)
 
     return {
-        "p_fake": round(p_fake, 4),
-        "verdict": verdict,
-        "confidence": confidence,
-        "face_detected": face_detected,
+        "p_fake": round(max_p_fake, 4),
+        "verdict": overall_verdict,
+        "confidence": overall_confidence,
+        "face_detected": True,
+        "face_count": face_count,
         "bounding_box": bounding_box,
+        "faces": faces_list,
+        "auto_focus": {
+            "status": "locked",
+            "mode": "multi_target" if face_count > 1 else "single_target",
+            "active_targets": face_count,
+            "targets": faces_list,
+        },
         "bio_metrics": bio_data,
         "frame_width": w,
         "frame_height": h,

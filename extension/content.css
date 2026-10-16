@@ -138,6 +138,26 @@
   border-color: #f87171;
 }
 
+.hv-face-overlay[data-label]::after {
+  content: attr(data-label);
+  position: absolute;
+  top: -24px;
+  left: 0;
+  background: rgba(15, 23, 42, 0.92);
+  color: #34d399;
+  border: 1px solid #34d399;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.hv-face-overlay.hv-suspicious-box[data-label]::after {
+  color: #f87171;
+  border-color: #ef4444;
+}
+
 /* Draggable Control Pill in Google Meet */
 .hv-dock-pill {
   position: fixed;

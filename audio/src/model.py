@@ -155,31 +155,66 @@ class Wav2Vec2AudioClassifier(nn.Module):
         return optimizer
 
 
+class RNNAudioClassifier(nn.Module):
+    """Recurrent Neural Network (CRNN: Strided Conv1d + Bidirectional GRU) for Audio Deepfake Detection."""
+
+    def __init__(self, hidden_dim: int = 64, num_classes: int = 2) -> None:
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=16, stride=8),
+            nn.GroupNorm(4, 32),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=8, stride=4),
+            nn.GroupNorm(8, 64),
+            nn.ReLU(),
+            nn.Conv1d(64, hidden_dim, kernel_size=4, stride=2),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(),
+        )
+        self.rnn = nn.GRU(hidden_dim, hidden_dim, num_layers=1, batch_first=True, bidirectional=True)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim * 2, 64),
+            nn.ReLU(),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        feat = self.conv(x).transpose(1, 2)
+        out, _ = self.rnn(feat)
+        pooled = torch.mean(out, dim=1)
+        return self.fc(pooled)
+
+
 def build_model(
     model_name: str = "facebook/wav2vec2-base",
     num_classes: int = 2,
     freeze_backbone: bool = True,
     dropout: float = 0.1,
     device: Optional[torch.device] = None,
-) -> Wav2Vec2AudioClassifier:
+) -> nn.Module:
     """Factory function to build and initialize the audio classifier.
 
     Args:
-        model_name: HuggingFace model identifier.
+        model_name: Model identifier or 'rnn' / 'crnn'.
         num_classes: Number of target classes.
         freeze_backbone: Whether to freeze backbone weights.
         dropout: Head dropout probability.
         device: Target computation device.
 
     Returns:
-        Instantiated Wav2Vec2AudioClassifier.
+        Instantiated audio classifier (Wav2Vec2AudioClassifier or RNNAudioClassifier).
     """
-    model = Wav2Vec2AudioClassifier(
-        model_name=model_name,
-        num_classes=num_classes,
-        freeze_backbone=freeze_backbone,
-        dropout=dropout,
-    )
+    if "rnn" in model_name.lower() or "crnn" in model_name.lower():
+        model: nn.Module = RNNAudioClassifier(hidden_dim=64, num_classes=num_classes)
+    else:
+        model = Wav2Vec2AudioClassifier(
+            model_name=model_name,
+            num_classes=num_classes,
+            freeze_backbone=freeze_backbone,
+            dropout=dropout,
+        )
     if device is not None:
         model.to(device)
     return model

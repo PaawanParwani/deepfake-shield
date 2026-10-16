@@ -18,7 +18,7 @@
   let inFlight = false;
   let activeVideo = null;
   let hudBadge = null;
-  let faceOverlay = null;
+  let faceOverlays = [];
   let dockPill = null;
   let scanTimer = null;
 
@@ -148,14 +148,7 @@
       `;
     }
 
-    if (!faceOverlay) {
-      faceOverlay = document.createElement("div");
-      faceOverlay.className = "hv-face-overlay";
-      faceOverlay.style.display = "none";
-    }
-
     if (hudBadge.parentElement !== parent) parent.appendChild(hudBadge);
-    if (faceOverlay.parentElement !== parent) parent.appendChild(faceOverlay);
 
     // Click on any video tile to switch focus
     if (!video.__hv_click_bound) {
@@ -191,13 +184,25 @@
     hudBadge.style.display = "flex";
 
     const { p_fake, verdict, confidence, face_detected, bounding_box, latency_ms } = data;
+    const faces = data.faces && data.faces.length > 0 ? data.faces : (face_detected && bounding_box ? [{
+      face_id: "target_1",
+      bounding_box: bounding_box,
+      verdict: verdict,
+      p_fake: p_fake,
+      confidence: confidence,
+    }] : []);
+
+    const parent = video.parentElement || video;
+    if (getComputedStyle(parent).position === "static") {
+      parent.style.position = "relative";
+    }
 
     // CASE 1: NO FACE IN FRAME -> NEVER SHOW DEEPFAKE!
-    if (!face_detected || verdict === "no_face") {
+    if (!face_detected || verdict === "no_face" || faces.length === 0) {
       hudBadge.className = "hv-hud-badge hv-no-face";
       hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
       hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
-      if (faceOverlay) faceOverlay.style.display = "none";
+      faceOverlays.forEach(o => o.style.display = "none");
       if (dockPill) {
         dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
       }
@@ -205,39 +210,51 @@
     }
 
     // CASE 2: HUMAN FACE VERIFIED vs SYNTHETIC DEEPFAKE
-    const isFake = verdict === "suspicious";
+    const isFake = verdict === "suspicious" || faces.some(f => f.verdict === "suspicious" || f.p_fake >= 0.65);
+    const faceCount = faces.length;
 
     if (isFake) {
+      const fakeCount = faces.filter(f => f.verdict === "suspicious" || f.p_fake >= 0.65).length;
       hudBadge.className = "hv-hud-badge hv-suspicious";
-      hudBadge.querySelector("#hv-badge-title").textContent = "DEEPFAKE DETECTED";
+      hudBadge.querySelector("#hv-badge-title").textContent = faceCount > 1 ? `DEEPFAKE ALERT (${fakeCount}/${faceCount})` : "DEEPFAKE DETECTED";
       hudBadge.querySelector("#hv-badge-score").textContent = `${confidence}% Risk (${latency_ms}ms)`;
       if (dockPill) {
         dockPill.querySelector("#hv-dock-sub").textContent = `⚠️ Deepfake Alert (${confidence}% Risk)`;
       }
     } else {
       hudBadge.className = "hv-hud-badge hv-authentic";
-      hudBadge.querySelector("#hv-badge-title").textContent = "VERIFIED HUMAN";
+      hudBadge.querySelector("#hv-badge-title").textContent = faceCount > 1 ? `VERIFIED (${faceCount} TARGETS)` : "VERIFIED HUMAN";
       let bioText = `${confidence}%`;
       if (data.bio_metrics && data.bio_metrics.blink_count !== undefined && data.bio_metrics.blink_count > 0) {
         bioText += ` • ${data.bio_metrics.blink_count} Blinks`;
       }
       hudBadge.querySelector("#hv-badge-score").textContent = `${bioText} (${latency_ms}ms)`;
       if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = "99.5% Face & Pulse Protected";
+        dockPill.querySelector("#hv-dock-sub").textContent = `${faceCount} Face(s) Protected`;
       }
     }
 
-    // High Precision AR Face Overlay with object-fit: cover and mirroring support
-    if (faceOverlay && face_detected && bounding_box && video) {
+    // Ensure we have enough overlay elements
+    while (faceOverlays.length < faces.length) {
+      const el = document.createElement("div");
+      el.className = "hv-face-overlay";
+      el.style.display = "none";
+      parent.appendChild(el);
+      faceOverlays.push(el);
+    }
+
+    // Hide extra overlays
+    for (let i = faces.length; i < faceOverlays.length; i++) {
+      faceOverlays[i].style.display = "none";
+    }
+
+    // High Precision AR Auto-Focus Overlay with object-fit: cover and mirroring support
+    if (faces.length > 0 && video) {
       const vRect = video.getBoundingClientRect();
-      const pRect = (video.parentElement || video).getBoundingClientRect();
+      const pRect = parent.getBoundingClientRect();
 
       const fw = data.frame_width || 480;
       const fh = data.frame_height || 270;
-
-      const [x1, y1, x2, y2] = bounding_box;
-
-      // Handle CSS object-fit: cover uniform scaling & center-cropping
       const elemW = vRect.width;
       const elemH = vRect.height;
       const fitScale = Math.max(elemW / fw, elemH / fh);
@@ -245,26 +262,30 @@
       const renderH = fh * fitScale;
       const offsetX = (elemW - renderW) / 2;
       const offsetY = (elemH - renderH) / 2;
-
-      // Handle mirrored camera view (Google Meet self-view)
       const mirrored = isVideoMirrored(video);
-      const effX1 = mirrored ? (fw - x2) : x1;
-      const effX2 = mirrored ? (fw - x1) : x2;
 
-      const boxLeft = (vRect.left - pRect.left) + offsetX + (effX1 / fw) * renderW;
-      const boxTop = (vRect.top - pRect.top) + offsetY + (y1 / fh) * renderH;
-      const boxWidth = ((effX2 - effX1) / fw) * renderW;
-      const boxHeight = ((y2 - y1) / fh) * renderH;
+      faces.forEach((f, idx) => {
+        const overlay = faceOverlays[idx];
+        if (overlay.parentElement !== parent) parent.appendChild(overlay);
 
-      faceOverlay.style.display = "block";
-      faceOverlay.style.left = `${Math.round(boxLeft)}px`;
-      faceOverlay.style.top = `${Math.round(boxTop)}px`;
-      faceOverlay.style.width = `${Math.round(boxWidth)}px`;
-      faceOverlay.style.height = `${Math.round(boxHeight)}px`;
+        const [x1, y1, x2, y2] = f.bounding_box;
+        const effX1 = mirrored ? (fw - x2) : x1;
+        const effX2 = mirrored ? (fw - x1) : x2;
 
-      faceOverlay.className = isFake ? "hv-face-overlay hv-suspicious-box" : "hv-face-overlay";
-    } else if (faceOverlay) {
-      faceOverlay.style.display = "none";
+        const boxLeft = (vRect.left - pRect.left) + offsetX + (effX1 / fw) * renderW;
+        const boxTop = (vRect.top - pRect.top) + offsetY + (y1 / fh) * renderH;
+        const boxWidth = ((effX2 - effX1) / fw) * renderW;
+        const boxHeight = ((y2 - y1) / fh) * renderH;
+
+        const isTargetFake = f.verdict === "suspicious" || f.p_fake >= 0.65;
+        overlay.style.display = "block";
+        overlay.style.left = `${Math.round(boxLeft)}px`;
+        overlay.style.top = `${Math.round(boxTop)}px`;
+        overlay.style.width = `${Math.round(boxWidth)}px`;
+        overlay.style.height = `${Math.round(boxHeight)}px`;
+        overlay.className = isTargetFake ? "hv-face-overlay hv-suspicious-box" : "hv-face-overlay";
+        overlay.setAttribute("data-label", `AF #${idx + 1}: ${f.confidence}% ${isTargetFake ? 'Fake' : 'Real'}`);
+      });
     }
 
     // Telemetry to background worker
@@ -281,12 +302,12 @@
     hudBadge.className = "hv-hud-badge hv-scanning";
     hudBadge.querySelector("#hv-badge-title").textContent = "SHIELD READY";
     hudBadge.querySelector("#hv-badge-score").textContent = "Connecting...";
-    if (faceOverlay) faceOverlay.style.display = "none";
+    faceOverlays.forEach(o => o.style.display = "none");
   }
 
   function hideHUD() {
     if (hudBadge) hudBadge.style.display = "none";
-    if (faceOverlay) faceOverlay.style.display = "none";
+    faceOverlays.forEach(o => o.style.display = "none");
   }
 
   // Draggable Dock Pill (Moveable anywhere on Google Meet screen)
