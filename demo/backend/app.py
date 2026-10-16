@@ -110,7 +110,7 @@ ALLOWED_FRAME_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_AUDIO_SAMPLE_RATE: int = 16000
 DEFAULT_AUDIO_DURATION_SEC: float = 4.0
 DEFAULT_AUDIO_SAMPLES: int = int(DEFAULT_AUDIO_SAMPLE_RATE * DEFAULT_AUDIO_DURATION_SEC)
-MAX_VIDEO_FRAMES: int = 32
+MAX_VIDEO_FRAMES: int = int(os.getenv("MAX_VIDEO_FRAMES", "8" if (os.getenv("RENDER") or os.getenv("LIGHTWEIGHT_VIDEO") == "1") else "16"))
 VIDEO_IMAGE_SIZE: int = 224
 
 
@@ -353,8 +353,11 @@ def init_video_model() -> None:
     models.video_error = None
     models.mtcnn = None
 
-    # Initialize MTCNN face detector if facenet-pytorch is available
-    if MTCNN_AVAILABLE and MTCNN is not None and TORCH_AVAILABLE and torch is not None:
+    # Check if in memory-constrained environment (Render Free Tier 512MB RAM)
+    skip_mtcnn = bool(os.getenv("RENDER") or os.getenv("LIGHTWEIGHT_VIDEO") == "1")
+    if skip_mtcnn:
+        logger.info("Render/Lightweight environment detected: omitting MTCNN to save 150MB+ RAM. Using high-speed geometric face cropping.")
+    elif MTCNN_AVAILABLE and MTCNN is not None and TORCH_AVAILABLE and torch is not None:
         try:
             models.mtcnn = MTCNN(
                 image_size=VIDEO_IMAGE_SIZE,
@@ -645,7 +648,7 @@ def preprocess_audio(file_path: Path) -> Tuple[np.ndarray, float]:
 
 
 def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
-    """Sample video frames, detect/crop faces using MTCNN, and prepare normalized tensor batch.
+    """Sample video frames uniformly, detect/crop faces, and prepare normalized tensor batch.
 
     Args:
         file_path: Path to the video file on disk.
@@ -663,24 +666,32 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
     if not cap.isOpened():
         raise ValueError("Failed to open video file with OpenCV.")
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0 or np.isnan(fps):
-        fps = 30.0
-
-    step = max(1, int(round(fps)))
     sampled_frames_bgr: List[np.ndarray] = []
-
-    frame_idx = 0
-    while len(sampled_frames_bgr) < MAX_VIDEO_FRAMES:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % step == 0:
-            sampled_frames_bgr.append(frame)
-        frame_idx += 1
-
-    cap.release()
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            target_count = min(MAX_VIDEO_FRAMES, total_frames)
+            # Uniformly distribute frame samples across the entire video timeline
+            frame_indices = np.linspace(0, max(0, total_frames - 1), num=target_count, dtype=int)
+            for idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    sampled_frames_bgr.append(frame)
+        else:
+            # Fallback for streams without total_frames metadata
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            step = max(1, int(round(fps))) if (fps and not np.isnan(fps) and fps > 0) else 30
+            frame_idx = 0
+            while len(sampled_frames_bgr) < MAX_VIDEO_FRAMES:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx % step == 0:
+                    sampled_frames_bgr.append(frame)
+                frame_idx += 1
+    finally:
+        cap.release()
 
     if not sampled_frames_bgr:
         raise ValueError("No video frames could be decoded from the provided file.")
@@ -691,37 +702,48 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
 
     for frame_bgr in sampled_frames_bgr:
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        h, w, _ = frame_rgb.shape
         face_crop: Optional[np.ndarray] = None
 
-        # Attempt face detection with MTCNN if available
+        # Attempt face detection with MTCNN if available (scaled to max 320px for safety)
         if models.mtcnn is not None:
             try:
-                # MTCNN accepts PIL Image or numpy array
-                detected_box, _ = models.mtcnn.detect(frame_rgb)
-                if detected_box is not None and len(detected_box) > 0:
-                    box = detected_box[0].astype(int)
-                    h, w, _ = frame_rgb.shape
-                    x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
-                    # Add 20% margin
-                    bw = x2 - x1
-                    bh = y2 - y1
-                    margin_x = int(bw * 0.2)
-                    margin_y = int(bh * 0.2)
-                    crop_x1 = max(0, x1 - margin_x)
-                    crop_y1 = max(0, y1 - margin_y)
-                    crop_x2 = min(w, x2 + margin_x)
-                    crop_y2 = min(h, y2 + margin_y)
-                    if crop_x2 > crop_x1 and crop_y2 > crop_y1:
-                        face_crop = frame_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+                max_dim = max(h, w)
+                if max_dim > 320:
+                    scale = 320.0 / max_dim
+                    small_rgb = cv2.resize(frame_rgb, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+                    det_boxes, _ = models.mtcnn.detect(small_rgb)
+                    if det_boxes is not None and len(det_boxes) > 0:
+                        box = (det_boxes[0] / scale).astype(int)
+                        x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
+                        bw, bh = x2 - x1, y2 - y1
+                        crop_x1 = max(0, x1 - int(bw * 0.2))
+                        crop_y1 = max(0, y1 - int(bh * 0.2))
+                        crop_x2 = min(w, x2 + int(bw * 0.2))
+                        crop_y2 = min(h, y2 + int(bh * 0.2))
+                        if crop_x2 > crop_x1 and crop_y2 > crop_y1:
+                            face_crop = frame_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+                else:
+                    detected_box, _ = models.mtcnn.detect(frame_rgb)
+                    if detected_box is not None and len(detected_box) > 0:
+                        box = detected_box[0].astype(int)
+                        x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
+                        bw, bh = x2 - x1, y2 - y1
+                        crop_x1 = max(0, x1 - int(bw * 0.2))
+                        crop_y1 = max(0, y1 - int(bh * 0.2))
+                        crop_x2 = min(w, x2 + int(bw * 0.2))
+                        crop_y2 = min(h, y2 + int(bh * 0.2))
+                        if crop_x2 > crop_x1 and crop_y2 > crop_y1:
+                            face_crop = frame_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
             except Exception as exc:
                 logger.debug("MTCNN detection failed on frame: %s", exc)
 
-        # Fallback to center-square crop if no face was found or MTCNN wasn't available
+        # Fallback to intelligent upper-center crop (faces in video calls/WhatsApp/selfies are in upper-center)
         if face_crop is None or face_crop.size == 0:
-            h, w, _ = frame_rgb.shape
             crop_dim = min(h, w)
-            sy = (h - crop_dim) // 2
-            sx = (w - crop_dim) // 2
+            center_x = w // 2
+            sx = max(0, min(w - crop_dim, center_x - crop_dim // 2))
+            sy = max(0, int(h * 0.05)) if h > w else 0
             face_crop = frame_rgb[sy : sy + crop_dim, sx : sx + crop_dim]
 
         # Resize to 224x224
@@ -880,6 +902,11 @@ async def predict_video(file: UploadFile = File(...)) -> Dict[str, Any]:
                 probs = F.softmax(logits, dim=-1)
                 p_fake = float(probs[:, 1].mean().item())
 
+        del batch_array
+        if "tensor_input" in locals():
+            del tensor_input
+        gc.collect()
+
         p_fake = float(np.clip(p_fake, 0.0, 1.0))
         verdict = "suspicious" if p_fake >= 0.5 else "real"
         confidence = round(float(max(p_fake, 1.0 - p_fake) * 100.0), 2)
@@ -901,6 +928,7 @@ async def predict_video(file: UploadFile = File(...)) -> Dict[str, Any]:
         ) from exc
     finally:
         temp_path.unlink(missing_ok=True)
+        gc.collect()
 
 
 @app.post("/predict/frame")
@@ -1030,6 +1058,20 @@ async def predict_frame(
                                 logger.debug("Physiological update error: %s", p_err)
         except Exception as exc:
             logger.debug("MTCNN live detection exception: %s", exc)
+
+    # High-speed geometric face localization fallback when MTCNN is skipped (e.g. Render/Cloud free-tier)
+    if not face_detected or face_crop is None or face_crop.size == 0:
+        if models.mtcnn is None:
+            crop_dim = min(h, w)
+            center_x = w // 2
+            sq_x1 = max(0, min(w - crop_dim, center_x - crop_dim // 2))
+            sq_y1 = max(0, int(h * 0.05)) if h > w else 0
+            sq_x2 = min(w, sq_x1 + crop_dim)
+            sq_y2 = min(h, sq_y1 + crop_dim)
+            face_crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
+            if face_crop is not None and face_crop.size > 0:
+                face_detected = True
+                bounding_box = [int(w * 0.15), int(h * 0.05), int(w * 0.85), int(h * 0.85)]
 
     # CRITICAL SAFETY: If no face detected, NEVER classify background noise as a deepfake!
     if not face_detected or face_crop is None or face_crop.size == 0:

@@ -13,5 +13,7 @@ services:
         value: 10000
       - key: LIGHTWEIGHT_AUDIO
         value: "1"
+      - key: LIGHTWEIGHT_VIDEO
+        value: "1"
       - key: MALLOC_TRIM_THRESHOLD_
         value: "65536"
