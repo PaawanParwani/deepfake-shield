@@ -1100,14 +1100,16 @@ async def predict_frame(
                 except Exception:
                     sharpness = 100.0
 
-                # Generate compact base64 thumbnail for UI target gallery
+                # Generate compact base64 thumbnail only if requested (saves CPU and payload size for real-time extension)
                 thumb_b64 = None
-                try:
-                    thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
-                    _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
-                except Exception:
-                    pass
+                include_thumbs = request.query_params.get("include_thumbnails", "false").lower() == "true"
+                if include_thumbs:
+                    try:
+                        thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
+                        _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
+                    except Exception:
+                        pass
 
                 resized = cv2.resize(crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
                 norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
@@ -1250,9 +1252,9 @@ async def predict_frame(
 
         # Tri-state verdict with dual-threshold hysteresis:
         # Authentic: p_f <= 0.40
-        # Uncertain: 0.40 < p_f < 0.82
-        # Suspicious (Deepfake Alert): p_f >= 0.82
-        if p_f >= 0.82:
+        # Uncertain: 0.40 < p_f < 0.88
+        # Suspicious (Deepfake Alert): p_f >= 0.88
+        if p_f >= 0.88:
             v_verdict = "suspicious"
             conf = round(p_f * 100.0, 1)
         elif p_f <= 0.40:
