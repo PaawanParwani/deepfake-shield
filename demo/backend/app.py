@@ -392,9 +392,11 @@ def init_video_model() -> None:
                 margin=20,
                 keep_all=True,
                 post_process=False,
+                thresholds=[0.45, 0.55, 0.55],
+                min_face_size=16,
                 device=models.device
             )
-            logger.info("MTCNN multi-face detector initialized on %s (keep_all=True).", models.device)
+            logger.info("MTCNN multi-face detector initialized on %s (keep_all=True, adaptive sensitivity [0.45, 0.55, 0.55]).", models.device)
         except Exception as exc:
             logger.warning("Could not initialize MTCNN face detector: %s", exc)
 
@@ -1039,96 +1041,124 @@ async def predict_frame(
 
     valid_face_crops: List[Dict[str, Any]] = []
 
+    def extract_crops(cand_boxes, cand_probs, cand_landmarks, source_rgb):
+        extracted = []
+        raw_candidates = []
+        for i, box in enumerate(cand_boxes):
+            prob = cand_probs[i] if cand_probs is not None and len(cand_probs) > i else 1.0
+            lm = cand_landmarks[i] if cand_landmarks is not None and len(cand_landmarks) > i else None
+            if prob is not None and prob >= 0.45:
+                bx1, by1, bx2, by2 = [int(v) for v in box]
+                bw, bh = bx2 - bx1, by2 - by1
+                if bw >= 16 and bh >= 16:
+                    raw_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
+
+        raw_candidates.sort(key=lambda item: item[0], reverse=True)
+
+        for idx, (area, box, prob, lm) in enumerate(raw_candidates):
+            bx1, by1, bx2, by2 = box
+            bw, bh = bx2 - bx1, by2 - by1
+
+            # 1. UI Bounding Box with natural head/forehead margins
+            ui_margin_x = int(bw * 0.15)
+            ui_margin_top = int(bh * 0.30)
+            ui_margin_bottom = int(bh * 0.12)
+            ui_box = [
+                int(max(0, bx1 - ui_margin_x)),
+                int(max(0, by1 - ui_margin_top)),
+                int(min(w, bx2 + ui_margin_x)),
+                int(min(h, by2 + ui_margin_bottom)),
+            ]
+
+            # 2. Aspect-Ratio Preserving Square Crop (matches FF++ training distribution)
+            cx = int((bx1 + bx2) / 2)
+            cy = int((by1 + by2) / 2)
+            face_size = int(max(bw, bh) * 1.35)
+            half = face_size // 2
+
+            sq_x1 = cx - half
+            sq_y1 = cy - half
+            sq_x2 = cx + half
+            sq_y2 = cy + half
+
+            pad_left = max(0, -sq_x1)
+            pad_top = max(0, -sq_y1)
+            pad_right = max(0, sq_x2 - w)
+            pad_bottom = max(0, sq_y2 - h)
+
+            if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
+                padded = cv2.copyMakeBorder(source_rgb, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
+                crop = padded[sq_y1 + pad_top : sq_y2 + pad_top, sq_x1 + pad_left : sq_x2 + pad_left]
+            else:
+                crop = source_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
+
+            if crop is not None and crop.size > 0:
+                # Sharpness measurement via Laplacian variance
+                try:
+                    gray_c = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+                    sharpness = float(cv2.Laplacian(gray_c, cv2.CV_64F).var())
+                except Exception:
+                    sharpness = 100.0
+
+                # Generate compact base64 thumbnail for UI target gallery
+                thumb_b64 = None
+                try:
+                    thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
+                    _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
+                except Exception:
+                    pass
+
+                resized = cv2.resize(crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+                norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
+                transposed = np.transpose(norm_face, (2, 0, 1))
+
+                extracted.append({
+                    "ui_box": ui_box,
+                    "raw_box": box,
+                    "crop": crop,
+                    "transposed": transposed,
+                    "thumbnail": thumb_b64,
+                    "center": [cx, cy],
+                    "size": [int(bw), int(bh)],
+                    "prob": prob,
+                    "lm": lm,
+                    "sharpness": sharpness,
+                })
+
+                # Update physiological tracker on primary face if present
+                if idx == 0 and lm is not None and models.physio_tracker is not None:
+                    try:
+                        models.physio_tracker.update(frame_bgr, lm)
+                    except Exception as p_err:
+                        logger.debug("Physiological update error: %s", p_err)
+
+        return extracted
+
     if models.mtcnn is not None:
         try:
             boxes, probs, landmarks = models.mtcnn.detect(frame_rgb, landmarks=True)
             if boxes is not None and len(boxes) > 0:
-                raw_candidates = []
-                for i, box in enumerate(boxes):
-                    prob = probs[i] if probs is not None and len(probs) > i else 1.0
-                    lm = landmarks[i] if landmarks is not None and len(landmarks) > i else None
-                    if prob is not None and prob >= 0.50:
-                        bx1, by1, bx2, by2 = box.astype(int)
-                        bw, bh = bx2 - bx1, by2 - by1
-                        if bw >= 20 and bh >= 20:
-                            raw_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
-
-                # Sort by area descending so primary/largest face is Target #1
-                raw_candidates.sort(key=lambda item: item[0], reverse=True)
-
-                for idx, (area, box, prob, lm) in enumerate(raw_candidates):
-                    bx1, by1, bx2, by2 = box
-                    bw, bh = bx2 - bx1, by2 - by1
-
-                    # 1. UI Bounding Box with natural head/forehead margins
-                    ui_margin_x = int(bw * 0.15)
-                    ui_margin_top = int(bh * 0.30)
-                    ui_margin_bottom = int(bh * 0.12)
-                    ui_box = [
-                        int(max(0, bx1 - ui_margin_x)),
-                        int(max(0, by1 - ui_margin_top)),
-                        int(min(w, bx2 + ui_margin_x)),
-                        int(min(h, by2 + ui_margin_bottom)),
-                    ]
-
-                    # 2. Aspect-Ratio Preserving Square Crop (matches FF++ training distribution)
-                    cx = int((bx1 + bx2) / 2)
-                    cy = int((by1 + by2) / 2)
-                    face_size = int(max(bw, bh) * 1.35)
-                    half = face_size // 2
-
-                    sq_x1 = cx - half
-                    sq_y1 = cy - half
-                    sq_x2 = cx + half
-                    sq_y2 = cy + half
-
-                    pad_left = max(0, -sq_x1)
-                    pad_top = max(0, -sq_y1)
-                    pad_right = max(0, sq_x2 - w)
-                    pad_bottom = max(0, sq_y2 - h)
-
-                    if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
-                        padded = cv2.copyMakeBorder(frame_rgb, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
-                        crop = padded[sq_y1 + pad_top : sq_y2 + pad_top, sq_x1 + pad_left : sq_x2 + pad_left]
-                    else:
-                        crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
-
-                    if crop is not None and crop.size > 0:
-                        # Generate compact base64 thumbnail for UI target gallery
-                        thumb_b64 = None
-                        try:
-                            thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
-                            _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                            thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
-                        except Exception:
-                            pass
-
-                        resized = cv2.resize(crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
-                        norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
-                        transposed = np.transpose(norm_face, (2, 0, 1))
-
-                        valid_face_crops.append({
-                            "ui_box": ui_box,
-                            "raw_box": box,
-                            "crop": crop,
-                            "transposed": transposed,
-                            "thumbnail": thumb_b64,
-                            "center": [cx, cy],
-                            "size": [int(bw), int(bh)],
-                            "prob": prob,
-                            "lm": lm,
-                        })
-
-                        # Update physiological tracker on primary face if present
-                        if idx == 0 and lm is not None and models.physio_tracker is not None:
-                            try:
-                                models.physio_tracker.update(frame_bgr, lm)
-                            except Exception as p_err:
-                                logger.debug("Physiological update error: %s", p_err)
+                valid_face_crops = extract_crops(boxes, probs, landmarks, frame_rgb)
         except Exception as exc:
-            logger.debug("MTCNN multi-face detection exception: %s", exc)
+            logger.debug("MTCNN primary pass detection exception: %s", exc)
 
-    # High-speed geometric center fallback if no MTCNN faces were detected
+    # Pass 2: CLAHE adaptive contrast enhancement (salvages dim, backlit, tinted, or overexposed webcam frames)
+    if not valid_face_crops and models.mtcnn is not None:
+        try:
+            lab = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2LAB)
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+            enhanced_rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+            boxes, probs, landmarks = models.mtcnn.detect(enhanced_rgb, landmarks=True)
+            if boxes is not None and len(boxes) > 0:
+                valid_face_crops = extract_crops(boxes, probs, landmarks, frame_rgb)
+                if valid_face_crops:
+                    logger.debug("CLAHE contrast pass successfully detected %d face(s).", len(valid_face_crops))
+        except Exception as clahe_exc:
+            logger.debug("CLAHE face detection exception: %s", clahe_exc)
+
+    # High-speed geometric center fallback ONLY IF MTCNN model was not initialized
     if not valid_face_crops:
         if models.mtcnn is None:
             crop_dim = min(h, w)
@@ -1161,6 +1191,7 @@ async def predict_frame(
                     "size": [crop_dim, crop_dim],
                     "prob": 0.9,
                     "lm": None,
+                    "sharpness": 100.0,
                 })
 
     # CRITICAL SAFETY: If zero human faces detected in frame, return no_face immediately
@@ -1205,13 +1236,31 @@ async def predict_frame(
             probs_fake = probs[:, 1].cpu().tolist()
 
     for idx, (c_info, raw_p_fake) in enumerate(zip(valid_face_crops, probs_fake)):
-        p_f = float(np.clip(raw_p_fake, 0.0, 1.0))
-        is_f = p_f >= 0.65
-        v_verdict = "suspicious" if is_f else "authentic"
-        if is_f:
-            conf = round(min(99.6, max(95.0, 95.0 + (p_f - 0.65) * 12.0)), 1)
+        raw_p_f = float(np.clip(raw_p_fake, 0.0, 1.0))
+        sharpness = float(c_info.get("sharpness", 100.0))
+
+        # Softness / Webcam blur compensation:
+        # Standard webcams at 480p/720p or under slight motion have softness (sharpness < 85).
+        # The CNN penalizes missing sensor high-frequency grain, making raw_p_fake -> 1.0.
+        # We damp elevated fake scores when sharpness indicates webcam softness, steering it towards neutral uncertainty.
+        p_f = raw_p_f
+        if sharpness < 85.0 and p_f > 0.40:
+            softness_factor = max(0.50, min(1.0, (sharpness / 85.0) ** 0.5))
+            p_f = 0.40 + (p_f - 0.40) * softness_factor
+
+        # Tri-state verdict with dual-threshold hysteresis:
+        # Authentic: p_f <= 0.40
+        # Uncertain: 0.40 < p_f < 0.82
+        # Suspicious (Deepfake Alert): p_f >= 0.82
+        if p_f >= 0.82:
+            v_verdict = "suspicious"
+            conf = round(p_f * 100.0, 1)
+        elif p_f <= 0.40:
+            v_verdict = "authentic"
+            conf = round((1.0 - p_f) * 100.0, 1)
         else:
-            conf = round(min(99.6, max(95.0, 95.0 + (0.65 - p_f) * 7.0)), 1)
+            v_verdict = "uncertain"
+            conf = round(max(50.0, p_f * 100.0), 1)
 
         face_obj = {
             "face_id": f"target_{idx + 1}",
@@ -1219,6 +1268,8 @@ async def predict_frame(
             "bounding_box": [int(v) for v in c_info["ui_box"]],
             "raw_box": [int(v) for v in c_info["raw_box"]],
             "p_fake": round(float(p_f), 4),
+            "raw_p_fake": round(float(raw_p_f), 4),
+            "sharpness": round(sharpness, 1),
             "verdict": str(v_verdict),
             "confidence": float(conf),
             "center": [int(v) for v in c_info["center"]],
@@ -1231,13 +1282,17 @@ async def predict_frame(
     bounding_box = [int(v) for v in faces_list[0]["bounding_box"]]
     max_p_fake = float(max(f["p_fake"] for f in faces_list))
     has_fake = any(f["verdict"] == "suspicious" for f in faces_list)
-    overall_verdict = "suspicious" if has_fake else "authentic"
+    has_uncertain = any(f["verdict"] == "uncertain" for f in faces_list)
 
-    # Overall confidence
     if has_fake:
+        overall_verdict = "suspicious"
         overall_confidence = float(max(f["confidence"] for f in faces_list if f["verdict"] == "suspicious"))
+    elif has_uncertain:
+        overall_verdict = "uncertain"
+        overall_confidence = float(max(f["confidence"] for f in faces_list if f["verdict"] == "uncertain"))
     else:
-        overall_confidence = float(max(f["confidence"] for f in faces_list))
+        overall_verdict = "authentic"
+        overall_confidence = float(min(f["confidence"] for f in faces_list))
 
     latency_ms = round((time.time() - start_time) * 1000.0, 1)
 

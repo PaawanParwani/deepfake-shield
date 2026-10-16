@@ -5,27 +5,40 @@
   if (window.__HV_SHIELD_INJECTED__) return;
   window.__HV_SHIELD_INJECTED__ = true;
 
-  console.log("[Human Verification] Zero-Lag Meeting Shield active on:", window.location.hostname);
+  console.log("%c[Deepfake Shield]%c Real-Time Zero-Lag Meeting Shield Active", "color: #3b82f6; font-weight: bold;", "color: inherit;");
 
   let config = {
     enabled: true,
     backendUrl: "https://deepfake-shield-vyaq.onrender.com",
-    scanIntervalMs: 3000,
-    sensitivityThreshold: 0.65
+    scanIntervalMs: 1800,
+    sensitivityThreshold: 0.82,
+    debug: true
   };
 
   // State
   let inFlight = false;
   let activeVideo = null;
   let hudBadge = null;
-  let faceOverlays = [];
+  let overlayRoot = null;
   let dockPill = null;
   let scanTimer = null;
+  let animFrameId = null;
 
-  // Sync config
-  if (chrome && chrome.storage && chrome.storage.local) {
+  // Active Multi-Face Tracking Map: id -> TrackedFace
+  const trackedFaces = new Map();
+  let faceIdCounter = 0;
+
+  // Diagnostic Debug Logger
+  function debugLog(...args) {
+    if (config.debug) {
+      console.log("%c[Deepfake Shield Debug]", "color: #0ea5e9; font-weight: bold;", ...args);
+    }
+  }
+
+  // Sync extension storage config
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(
-      ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold"],
+      ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold", "debug"],
       (stored) => {
         if (stored) config = { ...config, ...stored };
         updateDockPill();
@@ -38,6 +51,19 @@
         updateDockPill();
       }
     });
+  }
+
+  // Ensure fixed Viewport Overlay Root exists (immune to parent overflow / transforms)
+  function getOrCreateOverlayRoot() {
+    if (overlayRoot && document.body.contains(overlayRoot)) return overlayRoot;
+    let root = document.getElementById("hv-overlay-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "hv-overlay-root";
+      document.body.appendChild(root);
+    }
+    overlayRoot = root;
+    return overlayRoot;
   }
 
   // Pre-allocated offscreen canvas (aspect-ratio preserved, max 480px)
@@ -63,10 +89,112 @@
       }
 
       offscreenCtx.drawImage(video, 0, 0, targetW, targetH);
-      return offscreenCanvas.toDataURL("image/jpeg", 0.82);
-    } catch {
+      return {
+        dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.85),
+        capturedW: targetW,
+        capturedH: targetH
+      };
+    } catch (err) {
+      debugLog("Frame capture exception:", err);
       return null;
     }
+  }
+
+  // Robust Mirroring Detection (Inspects entire ancestor DOM chain up to body)
+  function isVideoMirrored(video) {
+    let el = video;
+    let mirrorCount = 0;
+    while (el && el !== document.body) {
+      try {
+        const style = window.getComputedStyle(el);
+        const t = style.transform || style.webkitTransform || "";
+        if (t && t !== "none") {
+          if (t.includes("scaleX(-1)") || t.includes("scale(-1")) {
+            mirrorCount++;
+          } else if (t.startsWith("matrix(")) {
+            const parts = t.slice(7, -1).split(",").map((s) => parseFloat(s.trim()));
+            if (parts.length >= 1 && parts[0] < 0) {
+              mirrorCount++;
+            }
+          } else if (t.startsWith("matrix3d(")) {
+            const parts = t.slice(9, -1).split(",").map((s) => parseFloat(s.trim()));
+            if (parts.length >= 1 && parts[0] < 0) {
+              mirrorCount++;
+            }
+          }
+        }
+      } catch {
+        // ignore cross-boundary styling errors
+      }
+      el = el.parentElement;
+    }
+    return mirrorCount % 2 === 1;
+  }
+
+  // Exact Rendered Video Rect with object-fit: cover / contain / fill
+  function getRenderedVideoGeometry(video, fw, fh) {
+    const rect = video.getBoundingClientRect();
+    const elemW = rect.width;
+    const elemH = rect.height;
+
+    if (!fw || !fh || fw <= 0 || fh <= 0) {
+      return {
+        left: rect.left,
+        top: rect.top,
+        width: elemW,
+        height: elemH,
+        renderW: elemW,
+        renderH: elemH,
+        offsetX: 0,
+        offsetY: 0,
+        objectFit: "cover"
+      };
+    }
+
+    const style = window.getComputedStyle(video);
+    const objectFit = style.objectFit || "cover";
+
+    let renderW = elemW;
+    let renderH = elemH;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (objectFit === "contain") {
+      const scale = Math.min(elemW / fw, elemH / fh);
+      renderW = fw * scale;
+      renderH = fh * scale;
+      offsetX = (elemW - renderW) / 2;
+      offsetY = (elemH - renderH) / 2;
+    } else if (objectFit === "cover") {
+      const scale = Math.max(elemW / fw, elemH / fh);
+      renderW = fw * scale;
+      renderH = fh * scale;
+      offsetX = (elemW - renderW) / 2;
+      offsetY = (elemH - renderH) / 2;
+    } else if (objectFit === "fill") {
+      renderW = elemW;
+      renderH = elemH;
+      offsetX = 0;
+      offsetY = 0;
+    } else {
+      const scale = Math.max(elemW / fw, elemH / fh);
+      renderW = fw * scale;
+      renderH = fh * scale;
+      offsetX = (elemW - renderW) / 2;
+      offsetY = (elemH - renderH) / 2;
+    }
+
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: elemW,
+      height: elemH,
+      renderW,
+      renderH,
+      offsetX,
+      offsetY,
+      objectFit
+    };
   }
 
   // Select the primary participant video tile
@@ -75,7 +203,8 @@
     if (videos.length === 0) return null;
 
     if (activeVideo && !activeVideo.paused && !activeVideo.ended && activeVideo.readyState >= 2 && document.body.contains(activeVideo)) {
-      return activeVideo;
+      const r = activeVideo.getBoundingClientRect();
+      if (r.width >= 100 && r.height >= 80) return activeVideo;
     }
 
     let best = null;
@@ -93,8 +222,8 @@
     return best;
   }
 
+  // Main Live Frame Analysis
   async function analyzeLiveFrame() {
-    // Zero-lag protection: skip if tab is not visible or request in-flight
     if (document.hidden || !config.enabled || inFlight) return;
 
     const video = findPrimaryVideo();
@@ -108,22 +237,27 @@
       attachHUD(video);
     }
 
-    const frameB64 = captureCompactFrame(video);
-    if (!frameB64) return;
+    const capture = captureCompactFrame(video);
+    if (!capture) return;
 
     inFlight = true;
+    const reqStart = performance.now();
     try {
       const resp = await fetch(`${config.backendUrl}/predict/frame`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image_base64: frameB64 })
+        body: JSON.stringify({ image_base64: capture.dataUrl })
       });
 
       if (resp.ok) {
         const data = await resp.json();
-        renderDetection(data, video);
+        const clientLatency = Math.round(performance.now() - reqStart);
+        processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
+      } else {
+        debugLog(`Server responded with HTTP ${resp.status}`);
       }
-    } catch {
+    } catch (err) {
+      debugLog("Inference fetch error:", err);
       renderOffline();
     } finally {
       inFlight = false;
@@ -131,10 +265,7 @@
   }
 
   function attachHUD(video) {
-    const parent = video.parentElement || video;
-    if (getComputedStyle(parent).position === "static") {
-      parent.style.position = "relative";
-    }
+    getOrCreateOverlayRoot();
 
     if (!hudBadge) {
       hudBadge = document.createElement("div");
@@ -143,18 +274,16 @@
         <div class="hv-pulse-dot"></div>
         <div class="hv-hud-text">
           <span id="hv-badge-title">PROTECTED</span>
-          <span class="hv-hud-score" id="hv-badge-score">99.4% Authentic</span>
+          <span class="hv-hud-score" id="hv-badge-score">Initializing...</span>
         </div>
       `;
+      document.body.appendChild(hudBadge);
     }
 
-    if (hudBadge.parentElement !== parent) parent.appendChild(hudBadge);
-
-    // Click on any video tile to switch focus
     if (!video.__hv_click_bound) {
       video.__hv_click_bound = true;
       video.style.cursor = "pointer";
-      video.title = "Click to focus Deepfake Shield on this participant";
+      video.title = "Click to focus Deepfake Shield on this video tile";
       video.addEventListener("click", () => {
         activeVideo = video;
         attachHUD(video);
@@ -163,151 +292,294 @@
     }
   }
 
-  function isVideoMirrored(video) {
-    try {
-      const style = window.getComputedStyle(video);
-      const transform = style.transform || style.webkitTransform || "";
-      if (transform.includes("matrix(-1") || transform.includes("scale(-1") || transform.includes("scaleX(-1)")) {
-        return true;
-      }
-      if (video.style.transform && (video.style.transform.includes("-1") || video.style.transform.includes("scaleX(-1)"))) {
-        return true;
-      }
-    } catch {
-      // ignore
+  function updateHUDBadgePosition() {
+    if (!hudBadge || !activeVideo || !document.body.contains(activeVideo)) return;
+    const rect = activeVideo.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      hudBadge.style.display = "none";
+      return;
     }
-    return false;
+    hudBadge.style.display = "flex";
+    hudBadge.style.left = `${Math.round(rect.left + 14)}px`;
+    hudBadge.style.top = `${Math.round(rect.top + 14)}px`;
   }
 
-  function renderDetection(data, video) {
+  // Multi-Face Tracking & Coordinate Mapping
+  function processDetections(data, video, capturedW, capturedH, clientLatency) {
     if (!hudBadge) return;
-    hudBadge.style.display = "flex";
+    const root = getOrCreateOverlayRoot();
 
     const { p_fake, verdict, confidence, face_detected, bounding_box, latency_ms } = data;
-    const faces = data.faces && data.faces.length > 0 ? data.faces : (face_detected && bounding_box ? [{
-      face_id: "target_1",
-      bounding_box: bounding_box,
-      verdict: verdict,
-      p_fake: p_fake,
-      confidence: confidence,
-    }] : []);
+    const fw = data.frame_width || capturedW || 480;
+    const fh = data.frame_height || capturedH || 270;
+    const mirrored = isVideoMirrored(video);
+    const geom = getRenderedVideoGeometry(video, fw, fh);
 
-    const parent = video.parentElement || video;
-    if (getComputedStyle(parent).position === "static") {
-      parent.style.position = "relative";
-    }
+    debugLog(`Video Element: ${Math.round(geom.width)}x${Math.round(geom.height)} | Stream: ${fw}x${fh} | Fit: ${geom.objectFit} | Mirrored: ${mirrored}`);
 
-    // CASE 1: NO FACE IN FRAME -> NEVER SHOW DEEPFAKE!
-    if (!face_detected || verdict === "no_face" || faces.length === 0) {
+    // CASE 1: ZERO FACES DETECTED
+    if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
       hudBadge.className = "hv-hud-badge hv-no-face";
       hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
       hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
-      faceOverlays.forEach(o => o.style.display = "none");
       if (dockPill) {
         dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
+      }
+
+      // Mark all tracked faces as not updated so they smoothly fade out
+      const now = performance.now();
+      for (const face of trackedFaces.values()) {
+        if (!face.fading) {
+          face.fading = true;
+          face.fadeStart = now;
+        }
       }
       return;
     }
 
-    // CASE 2: HUMAN FACE VERIFIED vs SYNTHETIC DEEPFAKE
-    const isFake = verdict === "suspicious" || faces.some(f => f.verdict === "suspicious" || f.p_fake >= 0.65);
-    const faceCount = faces.length;
+    const incomingFaces = data.faces && data.faces.length > 0 ? data.faces : [{
+      face_id: "target_1",
+      bounding_box: bounding_box,
+      raw_box: bounding_box,
+      verdict: verdict,
+      p_fake: p_fake,
+      raw_p_fake: p_fake,
+      sharpness: 100,
+      confidence: confidence
+    }];
 
-    if (isFake) {
-      const fakeCount = faces.filter(f => f.verdict === "suspicious" || f.p_fake >= 0.65).length;
+    debugLog(`Incoming Detections (${latency_ms || clientLatency}ms): ${incomingFaces.length} Face(s)`);
+
+    const now = performance.now();
+    const matchedTrackIds = new Set();
+
+    // Map incoming detections to existing tracked faces by centroid proximity
+    incomingFaces.forEach((det, idx) => {
+      const [bx1, by1, bx2, by2] = det.bounding_box;
+      const effX1 = mirrored ? (fw - bx2) : bx1;
+      const effX2 = mirrored ? (fw - bx1) : bx2;
+
+      // Project into viewport screen coordinates
+      const screenX = geom.left + geom.offsetX + (effX1 / fw) * geom.renderW;
+      const screenY = geom.top + geom.offsetY + (by1 / fh) * geom.renderH;
+      const screenW = ((effX2 - effX1) / fw) * geom.renderW;
+      const screenH = ((by2 - by1) / fh) * geom.renderH;
+      const centerX = screenX + screenW / 2;
+      const centerY = screenY + screenH / 2;
+
+      debugLog(`  Target #${idx + 1}: RawBox=[${det.raw_box || det.bounding_box}] -> Screen=[${Math.round(screenX)}, ${Math.round(screenY)}, ${Math.round(screenW)}, ${Math.round(screenH)}] | p_fake=${((det.p_fake || 0) * 100).toFixed(1)}% | Sharpness=${det.sharpness || 'N/A'} | Verdict=${det.verdict}`);
+
+      // Find closest existing tracked face
+      let bestMatch = null;
+      let minDistance = 180; // Proximity threshold in pixels
+
+      for (const [id, face] of trackedFaces.entries()) {
+        if (matchedTrackIds.has(id)) continue;
+        const curCX = face.current.x + face.current.w / 2;
+        const curCY = face.current.y + face.current.h / 2;
+        const dist = Math.hypot(curCX - centerX, curCY - centerY);
+        if (dist < minDistance) {
+          minDistance = dist;
+          bestMatch = face;
+        }
+      }
+
+      if (!bestMatch) {
+        // Create new tracked face
+        faceIdCounter++;
+        const newId = `track_${faceIdCounter}`;
+        const overlayEl = document.createElement("div");
+        overlayEl.className = "hv-face-overlay";
+        overlayEl.style.opacity = "0";
+        root.appendChild(overlayEl);
+
+        bestMatch = {
+          id: newId,
+          label: `Target #${idx + 1}`,
+          current: { x: screenX, y: screenY, w: screenW, h: screenH },
+          target: { x: screenX, y: screenY, w: screenW, h: screenH },
+          history: [],
+          smoothedScore: det.p_fake || 0.0,
+          consecutiveHighRisk: 0,
+          verdict: det.verdict || "authentic",
+          confidence: det.confidence || 90.0,
+          sharpness: det.sharpness || 100,
+          lastSeen: now,
+          opacity: 1.0,
+          fading: false,
+          overlayElement: overlayEl
+        };
+        trackedFaces.set(newId, bestMatch);
+      }
+
+      matchedTrackIds.add(bestMatch.id);
+      bestMatch.lastSeen = now;
+      bestMatch.fading = false;
+      bestMatch.label = `Target #${idx + 1}`;
+      bestMatch.target = { x: screenX, y: screenY, w: screenW, h: screenH };
+      bestMatch.sharpness = det.sharpness || 100;
+
+      // Update temporal history buffer (max 5 frames)
+      bestMatch.history.push({
+        p_fake: det.p_fake || 0.0,
+        verdict: det.verdict || "authentic",
+        ts: now
+      });
+      if (bestMatch.history.length > 5) bestMatch.history.shift();
+
+      // Rolling average of p_fake
+      const avgScore = bestMatch.history.reduce((acc, h) => acc + h.p_fake, 0) / bestMatch.history.length;
+      bestMatch.smoothedScore = avgScore;
+
+      // Hysteresis & Schmitt Trigger:
+      // Require at least 3 consecutive frames with p_fake >= 0.82 to trigger Deepfake Alert
+      if ((det.p_fake || 0) >= 0.82) {
+        bestMatch.consecutiveHighRisk++;
+      } else {
+        bestMatch.consecutiveHighRisk = Math.max(0, bestMatch.consecutiveHighRisk - 1);
+      }
+
+      if (avgScore >= 0.82 && bestMatch.consecutiveHighRisk >= 3) {
+        bestMatch.verdict = "suspicious";
+        bestMatch.confidence = Math.round(avgScore * 100);
+      } else if (avgScore <= 0.40) {
+        bestMatch.verdict = "authentic";
+        bestMatch.confidence = Math.round((1.0 - avgScore) * 100);
+      } else {
+        bestMatch.verdict = "uncertain";
+        bestMatch.confidence = Math.round(avgScore * 100);
+      }
+    });
+
+    // Mark unmatched faces for smooth fade out
+    for (const [id, face] of trackedFaces.entries()) {
+      if (!matchedTrackIds.has(id)) {
+        if (!face.fading) {
+          face.fading = true;
+          face.fadeStart = now;
+        }
+      }
+    }
+
+    // Determine Aggregate Verdict for Floating Top HUD Badge
+    const activeList = Array.from(trackedFaces.values()).filter((f) => !f.fading);
+    const totalFaces = activeList.length;
+    const suspiciousFaces = activeList.filter((f) => f.verdict === "suspicious");
+    const uncertainFaces = activeList.filter((f) => f.verdict === "uncertain");
+
+    if (suspiciousFaces.length > 0) {
+      const maxRisk = Math.max(...suspiciousFaces.map((f) => f.confidence));
       hudBadge.className = "hv-hud-badge hv-suspicious";
-      hudBadge.querySelector("#hv-badge-title").textContent = faceCount > 1 ? `DEEPFAKE ALERT (${fakeCount}/${faceCount})` : "DEEPFAKE DETECTED";
-      hudBadge.querySelector("#hv-badge-score").textContent = `${confidence}% Risk (${latency_ms}ms)`;
+      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `DEEPFAKE ALERT (${suspiciousFaces.length}/${totalFaces})` : "DEEPFAKE DETECTED";
+      hudBadge.querySelector("#hv-badge-score").textContent = `${maxRisk}% Risk (${latency_ms || clientLatency}ms)`;
       if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = `⚠️ Deepfake Alert (${confidence}% Risk)`;
+        dockPill.querySelector("#hv-dock-sub").textContent = `⚠️ Deepfake Alert (${maxRisk}% Risk)`;
+      }
+    } else if (uncertainFaces.length > 0) {
+      hudBadge.className = "hv-hud-badge hv-uncertain";
+      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `ANALYZING (${totalFaces} TARGETS)` : "ANALYZING (UNCERTAIN)";
+      hudBadge.querySelector("#hv-badge-score").textContent = `Verifying Video... (${latency_ms || clientLatency}ms)`;
+      if (dockPill) {
+        dockPill.querySelector("#hv-dock-sub").textContent = "Analyzing Video Consistency...";
       }
     } else {
+      const minAuthConf = totalFaces > 0 ? Math.min(...activeList.map((f) => f.confidence)) : 95.0;
       hudBadge.className = "hv-hud-badge hv-authentic";
-      hudBadge.querySelector("#hv-badge-title").textContent = faceCount > 1 ? `VERIFIED (${faceCount} TARGETS)` : "VERIFIED HUMAN";
-      let bioText = `${confidence}%`;
+      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `VERIFIED (${totalFaces} TARGETS)` : "VERIFIED HUMAN";
+      let bioText = `${minAuthConf}% Authentic`;
       if (data.bio_metrics && data.bio_metrics.blink_count !== undefined && data.bio_metrics.blink_count > 0) {
         bioText += ` • ${data.bio_metrics.blink_count} Blinks`;
       }
-      hudBadge.querySelector("#hv-badge-score").textContent = `${bioText} (${latency_ms}ms)`;
+      hudBadge.querySelector("#hv-badge-score").textContent = `${bioText} (${latency_ms || clientLatency}ms)`;
       if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = `${faceCount} Face(s) Protected`;
+        dockPill.querySelector("#hv-dock-sub").textContent = `${totalFaces} Face(s) Protected`;
       }
     }
 
-    // Ensure we have enough overlay elements
-    while (faceOverlays.length < faces.length) {
-      const el = document.createElement("div");
-      el.className = "hv-face-overlay";
-      el.style.display = "none";
-      parent.appendChild(el);
-      faceOverlays.push(el);
-    }
-
-    // Hide extra overlays
-    for (let i = faces.length; i < faceOverlays.length; i++) {
-      faceOverlays[i].style.display = "none";
-    }
-
-    // High Precision AR Auto-Focus Overlay with object-fit: cover and mirroring support
-    if (faces.length > 0 && video) {
-      const vRect = video.getBoundingClientRect();
-      const pRect = parent.getBoundingClientRect();
-
-      const fw = data.frame_width || 480;
-      const fh = data.frame_height || 270;
-      const elemW = vRect.width;
-      const elemH = vRect.height;
-      const fitScale = Math.max(elemW / fw, elemH / fh);
-      const renderW = fw * fitScale;
-      const renderH = fh * fitScale;
-      const offsetX = (elemW - renderW) / 2;
-      const offsetY = (elemH - renderH) / 2;
-      const mirrored = isVideoMirrored(video);
-
-      faces.forEach((f, idx) => {
-        const overlay = faceOverlays[idx];
-        if (overlay.parentElement !== parent) parent.appendChild(overlay);
-
-        const [x1, y1, x2, y2] = f.bounding_box;
-        const effX1 = mirrored ? (fw - x2) : x1;
-        const effX2 = mirrored ? (fw - x1) : x2;
-
-        const boxLeft = (vRect.left - pRect.left) + offsetX + (effX1 / fw) * renderW;
-        const boxTop = (vRect.top - pRect.top) + offsetY + (y1 / fh) * renderH;
-        const boxWidth = ((effX2 - effX1) / fw) * renderW;
-        const boxHeight = ((y2 - y1) / fh) * renderH;
-
-        const isTargetFake = f.verdict === "suspicious" || f.p_fake >= 0.65;
-        overlay.style.display = "block";
-        overlay.style.left = `${Math.round(boxLeft)}px`;
-        overlay.style.top = `${Math.round(boxTop)}px`;
-        overlay.style.width = `${Math.round(boxWidth)}px`;
-        overlay.style.height = `${Math.round(boxHeight)}px`;
-        overlay.className = isTargetFake ? "hv-face-overlay hv-suspicious-box" : "hv-face-overlay";
-        overlay.setAttribute("data-label", `AF #${idx + 1}: ${f.confidence}% ${isTargetFake ? 'Fake' : 'Real'}`);
-      });
-    }
-
-    // Telemetry to background worker
-    if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+    // Telemetry update to background service worker
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({
         type: "DETECTION_UPDATE",
-        payload: { verdict, confidence }
+        payload: {
+          verdict: suspiciousFaces.length > 0 ? "suspicious" : (uncertainFaces.length > 0 ? "uncertain" : "authentic"),
+          confidence: totalFaces > 0 ? activeList[0].confidence : 95.0
+        }
       }).catch(() => {});
     }
+  }
+
+  // 60 FPS Linear Interpolation (Lerp) & Render Loop
+  function animationLoop() {
+    const now = performance.now();
+    if (config.enabled && activeVideo && document.body.contains(activeVideo)) {
+      updateHUDBadgePosition();
+
+      const lerpFactor = 0.22; // Smooth 60 FPS transition factor
+      for (const [id, face] of trackedFaces.entries()) {
+        if (face.fading) {
+          const elapsed = now - (face.fadeStart || now);
+          face.opacity = Math.max(0, 1.0 - elapsed / 1000); // 1.0s smooth fade out
+        } else {
+          face.opacity = Math.min(1.0, face.opacity + 0.1);
+        }
+
+        if (face.opacity <= 0) {
+          if (face.overlayElement && face.overlayElement.parentNode) {
+            face.overlayElement.parentNode.removeChild(face.overlayElement);
+          }
+          trackedFaces.delete(id);
+          continue;
+        }
+
+        // Lerp towards target bounding box coordinates
+        face.current.x += (face.target.x - face.current.x) * lerpFactor;
+        face.current.y += (face.target.y - face.current.y) * lerpFactor;
+        face.current.w += (face.target.w - face.current.w) * lerpFactor;
+        face.current.h += (face.target.h - face.current.h) * lerpFactor;
+
+        const el = face.overlayElement;
+        if (el) {
+          el.style.display = "block";
+          el.style.left = `${Math.round(face.current.x)}px`;
+          el.style.top = `${Math.round(face.current.y)}px`;
+          el.style.width = `${Math.round(face.current.w)}px`;
+          el.style.height = `${Math.round(face.current.h)}px`;
+          el.style.opacity = face.opacity.toFixed(2);
+
+          if (face.verdict === "suspicious") {
+            el.className = "hv-face-overlay hv-suspicious-box";
+            el.setAttribute("data-label", `${face.label}: ${face.confidence}% Risk (Deepfake)`);
+          } else if (face.verdict === "uncertain") {
+            el.className = "hv-face-overlay hv-uncertain-box";
+            el.setAttribute("data-label", `${face.label}: Analyzing (${face.confidence}%)`);
+          } else {
+            el.className = "hv-face-overlay";
+            el.setAttribute("data-label", `${face.label}: ${face.confidence}% Real`);
+          }
+        }
+      }
+    } else {
+      hideHUD();
+    }
+
+    animFrameId = requestAnimationFrame(animationLoop);
   }
 
   function renderOffline() {
     if (!hudBadge) return;
     hudBadge.className = "hv-hud-badge hv-scanning";
     hudBadge.querySelector("#hv-badge-title").textContent = "SHIELD READY";
-    hudBadge.querySelector("#hv-badge-score").textContent = "Connecting...";
-    faceOverlays.forEach(o => o.style.display = "none");
+    hudBadge.querySelector("#hv-badge-score").textContent = "Connecting to backend...";
+    for (const face of trackedFaces.values()) {
+      if (face.overlayElement) face.overlayElement.style.display = "none";
+    }
   }
 
   function hideHUD() {
     if (hudBadge) hudBadge.style.display = "none";
-    faceOverlays.forEach(o => o.style.display = "none");
+    for (const face of trackedFaces.values()) {
+      if (face.overlayElement) face.overlayElement.style.display = "none";
+    }
   }
 
   // Draggable Dock Pill (Moveable anywhere on Google Meet screen)
@@ -327,7 +599,7 @@
       </div>
       <div class="hv-status-label">
         <span id="hv-dock-text">Deepfake Shield Active</span>
-        <span class="hv-sub" id="hv-dock-sub">99.4% Face & Voice Protected</span>
+        <span class="hv-sub" id="hv-dock-sub">Multi-Face AR Shield Active</span>
       </div>
       <button class="hv-btn-toggle hv-active" id="hv-btn-dock-toggle">Shield ON</button>
     `;
@@ -337,7 +609,7 @@
     dockPill.querySelector("#hv-btn-dock-toggle").addEventListener("click", (e) => {
       e.stopPropagation();
       config.enabled = !config.enabled;
-      if (chrome && chrome.storage && chrome.storage.local) {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
         chrome.storage.local.set({ enabled: config.enabled });
       }
       updateDockPill();
@@ -348,7 +620,6 @@
     updateDockPill();
   }
 
-  // Smooth drag-and-drop
   function makeDraggable(element) {
     let isDragging = false;
     let startX, startY, initialLeft, initialTop;
@@ -418,7 +689,7 @@
       btn.className = "hv-btn-toggle hv-active";
       btn.textContent = "Shield ON";
       label.textContent = "Deepfake Shield Active";
-      sub.textContent = "99.4% Face & Voice Protected";
+      sub.textContent = "Multi-Face AR Shield Active";
     } else {
       btn.className = "hv-btn-toggle";
       btn.textContent = "Paused";
@@ -427,7 +698,7 @@
     }
   }
 
-  // Debounced DOM Scanner (Only runs 1.5 seconds after DOM stops changing)
+  // Debounced DOM Scanner
   let domDebounce = null;
   const observer = new MutationObserver(() => {
     if (domDebounce) clearTimeout(domDebounce);
@@ -438,7 +709,7 @@
         activeVideo = v;
         attachHUD(v);
       }
-    }, 1500);
+    }, 1200);
   });
 
   observer.observe(document.body || document.documentElement, {
@@ -446,8 +717,11 @@
     subtree: true
   });
 
-  // Main Polling Loop at gentle 3.0s interval (Zero-lag, 0% CPU consumption)
-  scanTimer = setInterval(analyzeLiveFrame, 3000);
+  // Start 60 FPS animation loop
+  animFrameId = requestAnimationFrame(animationLoop);
+
+  // Main Detection Polling Loop (1.8s interval)
+  scanTimer = setInterval(analyzeLiveFrame, config.scanIntervalMs);
 
   createDockPill();
 })();

@@ -767,7 +767,82 @@
       color: var(--warning);
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      font-size: 0.75rem;
+    /* Auto-Focus Multi-Face Gallery & HUD */
+    .af-target-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 8px;
+      text-align: center;
+      transition: var(--transition);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .af-target-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .af-target-card.suspicious {
+      border-color: var(--danger-border);
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    .af-target-card.authentic {
+      border-color: var(--success-border);
+      background: rgba(16, 185, 129, 0.08);
+    }
+
+    .af-target-thumb {
+      width: 58px;
+      height: 58px;
+      border-radius: 50%;
+      object-fit: cover;
+      margin-bottom: 6px;
+      border: 2px solid var(--border-color);
+    }
+
+    .af-target-thumb.suspicious {
+      border-color: var(--danger);
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+    }
+
+    .af-target-thumb.authentic {
+      border-color: var(--success);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+    }
+
+    .af-target-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 3px;
+    }
+
+    .af-target-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+    }
+
+    .af-target-tag.suspicious {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--danger);
+      border: 1px solid var(--danger-border);
+    }
+
+    .af-target-tag.authentic {
+      background: rgba(16, 185, 129, 0.2);
+      color: var(--success);
+      border: 1px solid var(--success-border);
     }
 
     /* Animations */
@@ -876,7 +951,7 @@
           </div>
           <div class="card-title-group">
             <h2 id="audioHeader">Audio Verification</h2>
-            <p>Speech spoofing detection via wav2vec2 self-supervised backbone</p>
+            <p>Speech spoofing detection via Recurrent Neural Network (CRNN-BiGRU)</p>
           </div>
         </div>
 
@@ -947,7 +1022,7 @@
             </div>
             <div class="pill">
               <div class="pill-title">Backbone Architecture</div>
-              <div class="pill-value">wav2vec2-base</div>
+              <div class="pill-value">CRNN (Conv1d + BiGRU)</div>
             </div>
           </div>
         </div>
@@ -988,12 +1063,32 @@
         </div>
 
         <div id="cameraScannerBox" style="display: none; margin-top: 14px; background: rgba(0,0,0,0.5); border-radius: 14px; padding: 14px; border: 1px solid var(--border-color); text-align: center;">
-          <div style="position: relative; max-width: 360px; margin: 0 auto; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 8px 24px rgba(0,0,0,0.6);">
+          <div style="position: relative; max-width: 480px; margin: 0 auto; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 8px 24px rgba(0,0,0,0.6);">
             <video id="liveVideo" autoplay playsinline muted style="width: 100%; display: block; transform: scaleX(-1);"></video>
-            <div id="livePill" style="position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.82rem; background: rgba(15,23,42,0.85); color: #94a3b8; border: 1px solid rgba(255,255,255,0.15); white-space: nowrap;">
+            <canvas id="autoFocusCanvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10;"></canvas>
+            <div id="livePill" style="position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.82rem; background: rgba(15,23,42,0.85); color: #94a3b8; border: 1px solid rgba(255,255,255,0.15); white-space: nowrap; z-index: 20;">
               SEARCHING FOR FACE...
             </div>
+            <div id="afHudMode" style="position: absolute; top: 12px; left: 12px; font-size: 0.72rem; font-family: monospace; font-weight: 700; background: rgba(0,0,0,0.7); color: #10b981; padding: 4px 8px; border-radius: 4px; border: 1px solid #10b981; z-index: 20;">
+              [AF: SEARCHING]
+            </div>
           </div>
+
+          <!-- Multi-Face Auto-Focus Target Gallery -->
+          <div id="afTargetGallery" style="margin-top: 14px; display: none; text-align: left;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary);">
+                🎯 Auto-Focus Screen Targets (<span id="afTargetCount">0</span> detected)
+              </span>
+              <span id="afMultiVerdict" style="font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 12px; background: rgba(16,185,129,0.15); color: var(--success); border: 1px solid var(--success-border);">
+                All Bonafide
+              </span>
+            </div>
+            <div id="afTargetCards" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;">
+              <!-- Dynamic target cards inserted here -->
+            </div>
+          </div>
+
           <div style="display: flex; justify-content: center; gap: 10px; margin-top: 12px;">
             <button type="button" class="btn-analyze" id="btnStopCamera" style="background: rgba(239, 68, 68, 0.2); border: 1px solid var(--danger); padding: 8px 18px; font-size: 0.85rem; width: auto;">
               Stop Camera
@@ -1031,8 +1126,21 @@
             </div>
             <button type="button" class="btn-remove" id="btnVideoRemove" title="Remove file" aria-label="Remove video file">&times;</button>
           </div>
-          <div class="media-player-container">
-            <video id="videoPlayer" controls playsinline></video>
+          <div class="media-player-container" style="position: relative;">
+            <video id="videoPlayer" controls playsinline style="width: 100%; display: block; border-radius: var(--radius-sm);"></video>
+            <canvas id="videoOverlayCanvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10;"></canvas>
+          </div>
+          <!-- Uploaded Video Multi-Face Gallery -->
+          <div id="videoTargetGallery" style="margin-top: 14px; display: none; text-align: left;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary);">
+                🎯 Detected Participants (<span id="videoTargetCount">0</span> detected)
+              </span>
+              <span id="videoMultiVerdict" style="font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 12px; background: rgba(16,185,129,0.15); color: var(--success); border: 1px solid var(--success-border);">
+                All Bonafide
+              </span>
+            </div>
+            <div id="videoTargetCards" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;"></div>
           </div>
         </div>
 
@@ -1080,7 +1188,7 @@
     <!-- Footer -->
     <footer>
       <div class="footer-badge">Research Prototype &bull; Not for Production Use</div>
-      <p>Multi-stream deepfake verification based on wav2vec2 audio speech forensics and EfficientNet frame classification.</p>
+      <p>Multi-stream deepfake verification powered by Recurrent Neural Network (CRNN-BiGRU) temporal audio modeling, multi-face MTCNN auto-focus tracking, and EfficientNet frame classification.</p>
     </footer>
   </div>
 
@@ -1175,7 +1283,7 @@
 
       btnSaveConfig.addEventListener("click", () => {
         let val = backendUrlInput.value.trim().replace(/\/+$/, "");
-        if (!val) val = defaultBackend;
+        if (!val) val = LIVE_BACKEND_URL;
         backendUrl = val;
         localStorage.setItem("hv_backend_url", backendUrl);
         configBar.classList.remove("show");
@@ -1194,15 +1302,26 @@
         return filename.slice((filename.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
       }
 
-      // Backend Health Check
+      // Backend Health Check & Continuous Resilient Heartbeat
+      let healthTimeoutTimer = null;
+      let isCheckingHealth = false;
+
       async function checkHealth() {
-        statusDot.className = "status-dot";
-        statusText.textContent = "Connecting...";
+        if (isCheckingHealth) return;
+        isCheckingHealth = true;
+
+        if (!statusDot.classList.contains("online")) {
+          statusDot.className = "status-dot";
+          statusText.textContent = "Connecting (Waking server)...";
+        }
+
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          // Render free tier cold start takes up to 30s to spin up from sleep
+          const timeoutId = setTimeout(() => controller.abort(), 35000);
           const res = await fetch(`${backendUrl}/health`, { method: "GET", signal: controller.signal });
           clearTimeout(timeoutId);
+
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
           statusDot.className = "status-dot online";
@@ -1211,16 +1330,37 @@
           const videoReady = data.video_model_loaded;
 
           if (audioReady && videoReady) {
-            statusText.textContent = `Backend Ready (${data.device.toUpperCase()})`;
+            statusText.textContent = `Backend Ready (${data.device ? data.device.toUpperCase() : 'CPU'})`;
           } else if (audioReady || videoReady) {
             statusText.textContent = "Partial Models Loaded";
           } else {
             statusText.textContent = "Online (Models Pending)";
           }
+
+          // Heartbeat every 25 seconds to keep Render warm
+          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
+          healthTimeoutTimer = setTimeout(checkHealth, 25000);
         } catch (err) {
           statusDot.className = "status-dot offline";
-          statusText.textContent = "Backend Offline";
+          statusText.textContent = "Connecting (Waking server)...";
+          // Auto-retry every 4 seconds until connected
+          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
+          healthTimeoutTimer = setTimeout(checkHealth, 4000);
+        } finally {
+          isCheckingHealth = false;
         }
+      }
+
+      // Allow clicking status badge to immediately retry
+      const statusBadge = document.getElementById("statusBadge");
+      if (statusBadge) {
+        statusBadge.style.cursor = "pointer";
+        statusBadge.title = "Click to ping backend server";
+        statusBadge.addEventListener("click", () => {
+          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
+          isCheckingHealth = false;
+          checkHealth();
+        });
       }
 
       // Overall Banner Updater
@@ -1567,8 +1707,207 @@
           videoFrames.textContent = `${data.frames_used} facial crops`;
         }
 
+        if (data.faces && data.faces.length > 0) {
+          const videoOverlayCanvas = document.getElementById("videoOverlayCanvas");
+          const videoTargetGallery = document.getElementById("videoTargetGallery");
+          const videoTargetCount = document.getElementById("videoTargetCount");
+          const videoMultiVerdict = document.getElementById("videoMultiVerdict");
+          const videoTargetCards = document.getElementById("videoTargetCards");
+
+          renderTargetGallery(data.faces, data.verdict, videoTargetGallery, videoTargetCards, videoTargetCount, videoMultiVerdict);
+          drawAutoFocusHUD(videoOverlayCanvas, videoPlayer, data.faces, false, data.frame_width, data.frame_height);
+        }
+
         videoResults.classList.add("show");
         updateOverallBanner();
+      }
+
+      // --- AUTO-FOCUS MULTI-TARGET HUD ENGINE ---
+      const autoFocusCanvas = document.getElementById("autoFocusCanvas");
+      const afHudMode = document.getElementById("afHudMode");
+      const afTargetGallery = document.getElementById("afTargetGallery");
+      const afTargetCount = document.getElementById("afTargetCount");
+      const afMultiVerdict = document.getElementById("afMultiVerdict");
+      const afTargetCards = document.getElementById("afTargetCards");
+
+      function drawAutoFocusHUD(canvas, video, faces, isMirrored = false, fw = 480, fh = 360) {
+        if (!canvas || !video) return;
+        const rect = video.getBoundingClientRect();
+        const displayW = Math.round(rect.width) || video.videoWidth || 480;
+        const displayH = Math.round(rect.height) || video.videoHeight || 360;
+
+        if (canvas.width !== displayW || canvas.height !== displayH) {
+          canvas.width = displayW;
+          canvas.height = displayH;
+        }
+
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // If no faces detected, render pulsing radar/search reticle in center
+        if (!faces || faces.length === 0) {
+          const cx = canvas.width / 2;
+          const cy = canvas.height / 2;
+          ctx.save();
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.4)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 6]);
+          ctx.beginPath();
+          ctx.arc(cx, cy, 45, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Crosshairs
+          ctx.beginPath();
+          ctx.moveTo(cx - 12, cy); ctx.lineTo(cx + 12, cy);
+          ctx.moveTo(cx, cy - 12); ctx.lineTo(cx, cy + 12);
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+
+        const scaleX = canvas.width / (fw || 480);
+        const scaleY = canvas.height / (fh || 360);
+
+        faces.forEach((f, idx) => {
+          const [rawX1, rawY1, rawX2, rawY2] = f.bounding_box;
+          let bx1 = rawX1 * scaleX;
+          let bx2 = rawX2 * scaleX;
+          let by1 = rawY1 * scaleY;
+          let by2 = rawY2 * scaleY;
+
+          // Camera mirror compensation
+          if (isMirrored) {
+            const effX1 = canvas.width - bx2;
+            const effX2 = canvas.width - bx1;
+            bx1 = effX1;
+            bx2 = effX2;
+          }
+
+          const bw = Math.max(20, bx2 - bx1);
+          const bh = Math.max(20, by2 - by1);
+          const cx = bx1 + bw / 2;
+          const cy = by1 + bh / 2;
+          const cornerLen = Math.max(14, Math.min(bw, bh) * 0.22);
+
+          const isFake = f.verdict === "suspicious" || f.p_fake >= 0.65;
+          const strokeColor = isFake ? "#ef4444" : "#10b981";
+          const glowColor = isFake ? "rgba(239, 68, 68, 0.45)" : "rgba(16, 185, 129, 0.45)";
+
+          ctx.save();
+          ctx.shadowColor = strokeColor;
+          ctx.shadowBlur = 10;
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 2.5;
+
+          // 1. Four Auto-Focus Corner Brackets [ ]
+          // Top-Left
+          ctx.beginPath();
+          ctx.moveTo(bx1, by1 + cornerLen);
+          ctx.lineTo(bx1, by1);
+          ctx.lineTo(bx1 + cornerLen, by1);
+          ctx.stroke();
+
+          // Top-Right
+          ctx.beginPath();
+          ctx.moveTo(bx2 - cornerLen, by1);
+          ctx.lineTo(bx2, by1);
+          ctx.lineTo(bx2, by1 + cornerLen);
+          ctx.stroke();
+
+          // Bottom-Left
+          ctx.beginPath();
+          ctx.moveTo(bx1, by2 - cornerLen);
+          ctx.lineTo(bx1, by2);
+          ctx.lineTo(bx1 + cornerLen, by2);
+          ctx.stroke();
+
+          // Bottom-Right
+          ctx.beginPath();
+          ctx.moveTo(bx2 - cornerLen, by2);
+          ctx.lineTo(bx2, by2);
+          ctx.lineTo(bx2, by2 - cornerLen);
+          ctx.stroke();
+
+          // 2. Precision Center Crosshair (+)
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy);
+          ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
+          ctx.stroke();
+
+          // 3. DSLR Target Lock Badge: [AF-LOCK #N: AUTHENTIC 99.5%]
+          const badgeText = isFake
+            ? `🔴 AF-ALERT #${idx + 1}: DEEPFAKE ${f.confidence}%`
+            : `🟢 AF-LOCK #${idx + 1}: AUTHENTIC ${f.confidence}%`;
+
+          ctx.font = "bold 11px Inter, system-ui, sans-serif";
+          const textW = ctx.measureText(badgeText).width;
+          const badgeH = 18;
+          const badgeX = Math.max(8, Math.min(canvas.width - textW - 14, cx - textW / 2));
+          const badgeY = Math.max(badgeH + 4, by1 - 8);
+
+          ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
+          ctx.fillRect(badgeX - 4, badgeY - badgeH + 4, textW + 12, badgeH);
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 1.2;
+          ctx.strokeRect(badgeX - 4, badgeY - badgeH + 4, textW + 12, badgeH);
+
+          ctx.fillStyle = strokeColor;
+          ctx.fillText(badgeText, badgeX + 2, badgeY);
+
+          ctx.restore();
+        });
+      }
+
+      function renderTargetGallery(faces, overallVerdict, galleryEl, cardsEl, countEl, multiVerdictEl) {
+        if (!galleryEl || !cardsEl) return;
+        if (!faces || faces.length === 0) {
+          galleryEl.style.display = "none";
+          return;
+        }
+
+        galleryEl.style.display = "block";
+        if (countEl) countEl.textContent = faces.length;
+
+        const hasFake = faces.some(f => f.verdict === "suspicious" || f.p_fake >= 0.65);
+        if (multiVerdictEl) {
+          if (hasFake) {
+            const fakeCount = faces.filter(f => f.verdict === "suspicious" || f.p_fake >= 0.65).length;
+            multiVerdictEl.textContent = `⚠️ ${fakeCount} DEEPFAKE TARGET(S)`;
+            multiVerdictEl.style.background = "rgba(239, 68, 68, 0.15)";
+            multiVerdictEl.style.color = "var(--danger)";
+            multiVerdictEl.style.borderColor = "var(--danger-border)";
+          } else {
+            multiVerdictEl.textContent = `🟢 ALL ${faces.length} BONAFIDE HUMAN`;
+            multiVerdictEl.style.background = "rgba(16, 185, 129, 0.15)";
+            multiVerdictEl.style.color = "var(--success)";
+            multiVerdictEl.style.borderColor = "var(--success-border)";
+          }
+        }
+
+        cardsEl.innerHTML = "";
+        faces.forEach((f, idx) => {
+          const isFake = f.verdict === "suspicious" || f.p_fake >= 0.65;
+          const card = document.createElement("div");
+          card.className = `af-target-card ${isFake ? 'suspicious' : 'authentic'}`;
+
+          const thumbSrc = f.thumbnail || "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%236366f1'><circle cx='12' cy='8' r='4'/><path d='M4 20c0-4 4-6 8-6s8 2 8 6'/></svg>";
+
+          card.innerHTML = `
+            <img src="${thumbSrc}" class="af-target-thumb ${isFake ? 'suspicious' : 'authentic'}" alt="Target #${idx + 1}">
+            <div class="af-target-title">Target #${idx + 1}</div>
+            <span class="af-target-tag ${isFake ? 'suspicious' : 'authentic'}">
+              ${isFake ? 'DEEPFAKE' : 'AUTHENTIC'}
+            </span>
+            <div style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px;">
+              ${f.confidence}% Conf.
+            </div>
+            <div style="font-size: 0.68rem; font-family: monospace; color: ${isFake ? 'var(--danger)' : 'var(--success)'}; margin-top: 2px;">
+              P(Fake): ${f.p_fake.toFixed(3)}
+            </div>
+          `;
+          cardsEl.appendChild(card);
+        });
       }
 
       // --- LIVE MOBILE & WEBCAM SCANNER LOGIC ---
@@ -1616,21 +1955,64 @@
                 });
                 if (res.ok) {
                   const data = await res.json();
-                  if (!data.face_detected) {
-                    livePill.textContent = "SEARCHING FOR FACE...";
+                  const faces = data.faces || [];
+                  const faceCount = data.face_count !== undefined ? data.face_count : (data.face_detected ? 1 : 0);
+
+                  // 1. Draw Auto-Focus HUD on Screen Frame for all N faces
+                  drawAutoFocusHUD(autoFocusCanvas, liveVideo, faces, true, data.frame_width, data.frame_height);
+
+                  // 2. Render Target Gallery
+                  renderTargetGallery(faces, data.verdict, afTargetGallery, afTargetCards, afTargetCount, afMultiVerdict);
+
+                  // 3. Update HUD Mode Tag
+                  if (afHudMode) {
+                    if (faceCount === 0) {
+                      afHudMode.textContent = "[AF: SEARCHING]";
+                      afHudMode.style.color = "#94a3b8";
+                      afHudMode.style.borderColor = "rgba(255,255,255,0.2)";
+                    } else if (faceCount === 1) {
+                      afHudMode.textContent = `[AF-LOCKED: 1 TARGET]`;
+                      afHudMode.style.color = data.verdict === "suspicious" ? "#ef4444" : "#10b981";
+                      afHudMode.style.borderColor = data.verdict === "suspicious" ? "#ef4444" : "#10b981";
+                    } else {
+                      afHudMode.textContent = `[AF-MULTI: ${faceCount} TARGETS]`;
+                      afHudMode.style.color = data.verdict === "suspicious" ? "#ef4444" : "#10b981";
+                      afHudMode.style.borderColor = data.verdict === "suspicious" ? "#ef4444" : "#10b981";
+                    }
+                  }
+
+                  // 4. Update Live Pill
+                  if (!data.face_detected || faceCount === 0) {
+                    livePill.textContent = "SEARCHING FOR SUBJECT...";
                     livePill.style.background = "rgba(15,23,42,0.85)";
                     livePill.style.color = "#94a3b8";
                     livePill.style.borderColor = "rgba(255,255,255,0.15)";
-                  } else if (data.verdict === "suspicious") {
-                    livePill.textContent = `🔴 DEEPFAKE DETECTED (${data.confidence}%)`;
-                    livePill.style.background = "rgba(239,68,68,0.9)";
-                    livePill.style.color = "#fff";
-                    livePill.style.borderColor = "#ef4444";
+                  } else if (faceCount === 1) {
+                    if (data.verdict === "suspicious") {
+                      livePill.textContent = `🔴 DEEPFAKE DETECTED (${data.confidence}%)`;
+                      livePill.style.background = "rgba(239,68,68,0.9)";
+                      livePill.style.color = "#fff";
+                      livePill.style.borderColor = "#ef4444";
+                    } else {
+                      livePill.textContent = `🟢 VERIFIED HUMAN (${data.confidence}%)`;
+                      livePill.style.background = "rgba(16,185,129,0.9)";
+                      livePill.style.color = "#fff";
+                      livePill.style.borderColor = "#10b981";
+                    }
                   } else {
-                    livePill.textContent = `🟢 VERIFIED HUMAN (${data.confidence}%)`;
-                    livePill.style.background = "rgba(16,185,129,0.9)";
-                    livePill.style.color = "#fff";
-                    livePill.style.borderColor = "#10b981";
+                    // Multi-Face Screen
+                    const fakeCount = faces.filter(f => f.verdict === "suspicious" || f.p_fake >= 0.65).length;
+                    if (fakeCount > 0) {
+                      livePill.textContent = `🔴 MULTI-FACE ALERT: ${fakeCount} OF ${faceCount} DEEPFAKE!`;
+                      livePill.style.background = "rgba(239,68,68,0.9)";
+                      livePill.style.color = "#fff";
+                      livePill.style.borderColor = "#ef4444";
+                    } else {
+                      livePill.textContent = `🟢 MULTI-FACE: ALL ${faceCount} TARGETS VERIFIED`;
+                      livePill.style.background = "rgba(16,185,129,0.9)";
+                      livePill.style.color = "#fff";
+                      livePill.style.borderColor = "#10b981";
+                    }
                   }
                 }
               } catch (_) {}
@@ -1646,6 +2028,11 @@
             cameraStream = null;
           }
           if (cameraInterval) clearInterval(cameraInterval);
+          if (autoFocusCanvas) {
+            const ctx = autoFocusCanvas.getContext("2d");
+            ctx.clearRect(0, 0, autoFocusCanvas.width, autoFocusCanvas.height);
+          }
+          if (afTargetGallery) afTargetGallery.style.display = "none";
           cameraScannerBox.style.display = "none";
           btnToggleCamera.style.display = "block";
         });

@@ -1283,7 +1283,7 @@
 
       btnSaveConfig.addEventListener("click", () => {
         let val = backendUrlInput.value.trim().replace(/\/+$/, "");
-        if (!val) val = defaultBackend;
+        if (!val) val = LIVE_BACKEND_URL;
         backendUrl = val;
         localStorage.setItem("hv_backend_url", backendUrl);
         configBar.classList.remove("show");
@@ -1302,15 +1302,26 @@
         return filename.slice((filename.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
       }
 
-      // Backend Health Check
+      // Backend Health Check & Continuous Resilient Heartbeat
+      let healthTimeoutTimer = null;
+      let isCheckingHealth = false;
+
       async function checkHealth() {
-        statusDot.className = "status-dot";
-        statusText.textContent = "Connecting...";
+        if (isCheckingHealth) return;
+        isCheckingHealth = true;
+
+        if (!statusDot.classList.contains("online")) {
+          statusDot.className = "status-dot";
+          statusText.textContent = "Connecting (Waking server)...";
+        }
+
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          // Render free tier cold start takes up to 30s to spin up from sleep
+          const timeoutId = setTimeout(() => controller.abort(), 35000);
           const res = await fetch(`${backendUrl}/health`, { method: "GET", signal: controller.signal });
           clearTimeout(timeoutId);
+
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
           statusDot.className = "status-dot online";
@@ -1319,16 +1330,37 @@
           const videoReady = data.video_model_loaded;
 
           if (audioReady && videoReady) {
-            statusText.textContent = `Backend Ready (${data.device.toUpperCase()})`;
+            statusText.textContent = `Backend Ready (${data.device ? data.device.toUpperCase() : 'CPU'})`;
           } else if (audioReady || videoReady) {
             statusText.textContent = "Partial Models Loaded";
           } else {
             statusText.textContent = "Online (Models Pending)";
           }
+
+          // Heartbeat every 25 seconds to keep Render warm
+          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
+          healthTimeoutTimer = setTimeout(checkHealth, 25000);
         } catch (err) {
           statusDot.className = "status-dot offline";
-          statusText.textContent = "Backend Offline";
+          statusText.textContent = "Connecting (Waking server)...";
+          // Auto-retry every 4 seconds until connected
+          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
+          healthTimeoutTimer = setTimeout(checkHealth, 4000);
+        } finally {
+          isCheckingHealth = false;
         }
+      }
+
+      // Allow clicking status badge to immediately retry
+      const statusBadge = document.getElementById("statusBadge");
+      if (statusBadge) {
+        statusBadge.style.cursor = "pointer";
+        statusBadge.title = "Click to ping backend server";
+        statusBadge.addEventListener("click", () => {
+          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
+          isCheckingHealth = false;
+          checkHealth();
+        });
       }
 
       // Overall Banner Updater

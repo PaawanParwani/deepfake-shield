@@ -1,11 +1,21 @@
 /* Human Verification — Real-Time Meeting Shield Stylesheet */
 
+/* Viewport-fixed Overlay Container (Immune to parent transforms & overflow clipping) */
+#hv-overlay-root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 2147483640;
+  overflow: hidden;
+}
+
 /* Floating Participant Badge */
 .hv-hud-badge {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 999999;
+  position: fixed;
+  z-index: 2147483645;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -20,14 +30,14 @@
   -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   pointer-events: auto;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background 0.3s, border-color 0.3s, color 0.3s, box-shadow 0.3s;
   user-select: none;
 }
 
 /* Authentic State */
 .hv-hud-badge.hv-authentic {
-  background: rgba(6, 78, 59, 0.85);
-  border: 1px solid rgba(52, 211, 153, 0.8);
+  background: rgba(6, 78, 59, 0.88);
+  border: 1px solid rgba(52, 211, 153, 0.85);
   color: #ecfdf5;
   box-shadow: 0 0 15px rgba(16, 185, 129, 0.35);
 }
@@ -37,9 +47,22 @@
   box-shadow: 0 0 10px #34d399;
 }
 
+/* Uncertain / Analyzing State (Prevents False Positives on Webcams) */
+.hv-hud-badge.hv-uncertain {
+  background: rgba(120, 53, 15, 0.88);
+  border: 1px solid rgba(245, 158, 11, 0.85);
+  color: #fef3c7;
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.35);
+}
+
+.hv-hud-badge.hv-uncertain .hv-pulse-dot {
+  background-color: #f59e0b;
+  box-shadow: 0 0 10px #f59e0b;
+}
+
 /* Suspicious / Deepfake State */
 .hv-hud-badge.hv-suspicious {
-  background: rgba(127, 29, 29, 0.9);
+  background: rgba(127, 29, 29, 0.92);
   border: 1px solid rgba(248, 113, 113, 0.9);
   color: #fef2f2;
   animation: hv-alert-pulse 1.2s infinite;
@@ -94,13 +117,13 @@
 
 /* High-Definition Biometric Face Bounding Box */
 .hv-face-overlay {
-  position: absolute;
+  position: fixed;
   pointer-events: none;
-  z-index: 999998;
+  z-index: 2147483642;
   border: 2px solid #10b981;
   border-radius: 10px;
   box-shadow: 0 0 20px rgba(16, 185, 129, 0.4), inset 0 0 15px rgba(16, 185, 129, 0.1);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: border-color 0.25s, box-shadow 0.25s, opacity 0.3s;
   box-sizing: border-box;
 }
 
@@ -127,6 +150,23 @@
   border-width: 0 3px 3px 0;
 }
 
+/* Uncertain Box State (Yellow/Amber HUD) */
+.hv-face-overlay.hv-uncertain-box {
+  border: 2px solid #f59e0b;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.5), inset 0 0 15px rgba(245, 158, 11, 0.15);
+}
+
+.hv-face-overlay.hv-uncertain-box::before,
+.hv-face-overlay.hv-uncertain-box::after {
+  border-color: #fbbf24;
+}
+
+.hv-face-overlay.hv-uncertain-box[data-label]::after {
+  color: #fbbf24;
+  border-color: #f59e0b;
+}
+
+/* Suspicious Box State (Red Alert HUD) */
 .hv-face-overlay.hv-suspicious-box {
   border: 2px solid #ef4444;
   box-shadow: 0 0 25px rgba(239, 68, 68, 0.6), inset 0 0 20px rgba(239, 68, 68, 0.2);
