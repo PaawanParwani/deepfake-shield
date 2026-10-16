@@ -586,8 +586,28 @@ def preprocess_audio(file_path: Path) -> Tuple[np.ndarray, float]:
     waveform: Optional[np.ndarray] = None
     orig_sr: int = 16000
 
-    # Strategy 1: torchaudio
-    if TORCHAUDIO_AVAILABLE and torchaudio is not None:
+    # Strategy 1: soundfile (Fast, pure CFFI, completely stable across OS/Docker)
+    if SOUNDFILE_AVAILABLE and sf is not None:
+        try:
+            data, sr = sf.read(str(file_path))
+            if data.ndim > 1:
+                data = np.mean(data, axis=1)
+            waveform = data.astype(np.float32)
+            orig_sr = sr
+        except Exception as exc:
+            logger.debug("soundfile failed to load audio: %s", exc)
+
+    # Strategy 2: librosa
+    if waveform is None and LIBROSA_AVAILABLE and librosa is not None:
+        try:
+            data, sr = librosa.load(str(file_path), sr=DEFAULT_AUDIO_SAMPLE_RATE, mono=True)
+            waveform = data.astype(np.float32)
+            orig_sr = DEFAULT_AUDIO_SAMPLE_RATE
+        except Exception as exc:
+            logger.debug("librosa failed to load audio: %s", exc)
+
+    # Strategy 3: torchaudio
+    if waveform is None and TORCHAUDIO_AVAILABLE and torchaudio is not None:
         try:
             tensor_wav, sr = torchaudio.load(str(file_path))
             if tensor_wav.shape[0] > 1:
@@ -600,32 +620,18 @@ def preprocess_audio(file_path: Path) -> Tuple[np.ndarray, float]:
         except Exception as exc:
             logger.debug("torchaudio failed to load audio: %s", exc)
 
-    # Strategy 2: soundfile
-    if waveform is None and SOUNDFILE_AVAILABLE and sf is not None:
-        try:
-            data, sr = sf.read(str(file_path))
-            if data.ndim > 1:
-                data = np.mean(data, axis=1)
-            waveform = data.astype(np.float32)
-            orig_sr = sr
-        except Exception as exc:
-            logger.debug("soundfile failed to load audio: %s", exc)
-
-    # Strategy 3: librosa
-    if waveform is None and LIBROSA_AVAILABLE and librosa is not None:
-        try:
-            data, sr = librosa.load(str(file_path), sr=DEFAULT_AUDIO_SAMPLE_RATE, mono=True)
-            waveform = data.astype(np.float32)
-            orig_sr = DEFAULT_AUDIO_SAMPLE_RATE
-        except Exception as exc:
-            logger.debug("librosa failed to load audio: %s", exc)
-
     if waveform is None:
-        raise ValueError("Could not decode audio file with any available audio library (torchaudio, soundfile, librosa).")
+        raise ValueError("Could not decode audio file with any available audio library (soundfile, librosa, torchaudio).")
 
-    # Resample using librosa if needed
-    if orig_sr != DEFAULT_AUDIO_SAMPLE_RATE and LIBROSA_AVAILABLE and librosa is not None:
-        waveform = librosa.resample(waveform, orig_sr=orig_sr, target_sr=DEFAULT_AUDIO_SAMPLE_RATE)
+    # Resample to 16kHz if needed
+    if orig_sr != DEFAULT_AUDIO_SAMPLE_RATE:
+        try:
+            from scipy import signal
+            target_len = int(len(waveform) * DEFAULT_AUDIO_SAMPLE_RATE / orig_sr)
+            waveform = signal.resample(waveform, target_len).astype(np.float32)
+        except Exception:
+            if LIBROSA_AVAILABLE and librosa is not None:
+                waveform = librosa.resample(waveform, orig_sr=orig_sr, target_sr=DEFAULT_AUDIO_SAMPLE_RATE)
 
     duration_sec = float(len(waveform) / DEFAULT_AUDIO_SAMPLE_RATE)
 
