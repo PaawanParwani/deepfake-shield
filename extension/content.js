@@ -495,9 +495,9 @@
       const screenY = geom.top + geom.offsetY + (by1 / fh) * geom.renderH;
       const rawW = ((effX2 - effX1) / fw) * geom.renderW;
       const rawH = ((by2 - by1) / fh) * geom.renderH;
-      // Proportional face clamp: height strictly capped at 1.12x width (stops at chin line, never captures hands or wrists)
+      // Proportional face clamp: height capped at 1.30x width (natural portrait ratio, covers chin and beard)
       const screenW = rawW;
-      const screenH = Math.min(rawH, screenW * 1.12);
+      const screenH = Math.min(rawH, screenW * 1.30);
       const centerX = screenX + screenW / 2;
       const centerY = screenY + screenH / 2;
 
@@ -519,11 +519,34 @@
       };
     });
 
+    // Frontend Non-Maximum Suppression (Eliminates spurious ear/cap duplicate boxes)
+    const filteredDetections = [];
+    mappedDetections.sort((a, b) => (b.screenW * b.screenH) - (a.screenW * a.screenH));
+    for (const det of mappedDetections) {
+      let keep = true;
+      for (const kept of filteredDetections) {
+        const xA = Math.max(det.screenX, kept.screenX);
+        const yA = Math.max(det.screenY, kept.screenY);
+        const xB = Math.min(det.screenX + det.screenW, kept.screenX + kept.screenW);
+        const yB = Math.min(det.screenY + det.screenH, kept.screenY + kept.screenH);
+        const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+        const unionArea = (det.screenW * det.screenH) + (kept.screenW * kept.screenH) - interArea;
+        const iou = unionArea > 0 ? interArea / unionArea : 0;
+        const centerDist = Math.hypot(det.centerX - kept.centerX, det.centerY - kept.centerY);
+        if (iou > 0.15 || centerDist < Math.max(det.screenW, kept.screenW) * 0.70) {
+          keep = false;
+          break;
+        }
+      }
+      if (keep) filteredDetections.push(det);
+    }
+
     // 1-TO-1 MATCHING (Prevents ghost boxes)
-    mappedDetections.forEach((mDet) => {
+    filteredDetections.forEach((mDet) => {
       let bestMatch = null;
 
-      if (mappedDetections.length === 1 && trackedFaces.size === 1) {
+      if (filteredDetections.length === 1 && trackedFaces.size >= 1) {
+        // Strict single face lock: bind directly to primary face track
         bestMatch = Array.from(trackedFaces.values())[0];
       } else {
         let minDistance = Infinity;

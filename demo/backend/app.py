@@ -1079,30 +1079,26 @@ async def predict_frame(
             # Mouth corner elevation relative to mouth center (true smile curvature)
             corner_lift = (mouth_center[1] - (ml[1] + mr[1]) / 2.0) / eye_dist
 
-            # Chin resting / Hand-to-face occlusion detection:
-            # If distance from nose to mouth is compressed or distorted by resting fist/hand
+            # Chin resting / Hand-to-face occlusion detection
             is_hand_occluded = open_ratio < 0.45 or abs(ml[1] - mr[1]) / eye_dist > 0.35
 
             if is_hand_occluded:
                 emotion = "Thinking / Focused 🤔"
                 sentiment = "neutral"
-            elif smile_ratio >= 0.92 and corner_lift >= -0.02:
+            elif smile_ratio >= 0.95 and corner_lift >= 0.03:
                 # Genuine smile: wide mouth AND elevated corners
                 emotion = "Smiling 😊"
                 sentiment = "positive"
-            elif open_ratio >= 0.74:
-                # Significant vertical jaw drop
+            elif open_ratio >= 0.95:
+                # Genuine extreme jaw drop for surprise (never triggered by normal resting expression or cap shadow)
                 emotion = "Surprised 😲"
                 sentiment = "alert"
-            elif open_ratio >= 0.68 and smile_ratio < 0.90:
-                # Vertical lip separation for speaking
+            elif open_ratio >= 0.72 and smile_ratio < 0.92:
+                # Vertical lip separation during active speech
                 emotion = "Speaking / Engaged 💬"
                 sentiment = "active"
-            elif smile_ratio >= 0.89:
-                emotion = "Smiling 😊"
-                sentiment = "positive"
             else:
-                # Baseline resting facial expression
+                # Calibrated baseline resting expression
                 emotion = "Focused / Calm 👤"
                 sentiment = "neutral"
 
@@ -1114,38 +1110,102 @@ async def predict_frame(
         except Exception:
             return {"emotion": "Focused / Calm 👤", "sentiment": "neutral", "smile_score": 0.5}
 
+    def compute_iou(boxA, boxB):
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+        interW = max(0, xB - xA)
+        interH = max(0, yB - yA)
+        interArea = interW * interH
+        if interArea <= 0:
+            return 0.0
+        areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+        return float(interArea / max(1.0, areaA + areaB - interArea))
+
     def extract_crops(cand_boxes, cand_probs, cand_landmarks, source_rgb):
         extracted = []
         raw_candidates = []
+        min_dim = max(45, int(min(w, h) * 0.07))
+
         for i, box in enumerate(cand_boxes):
             prob = cand_probs[i] if cand_probs is not None and len(cand_probs) > i else 1.0
             lm = cand_landmarks[i] if cand_landmarks is not None and len(cand_landmarks) > i else None
-            if prob is not None and prob >= 0.45:
+            if prob is not None and prob >= 0.50:
                 bx1, by1, bx2, by2 = [int(v) for v in box]
                 bw, bh = bx2 - bx1, by2 - by1
-                if bw >= 16 and bh >= 16:
-                    raw_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
 
+                # Filter out small background patches, buttons, and ear artifacts
+                if bw < min_dim or bh < min_dim:
+                    continue
+
+                # Anatomical Landmark Sanity Check (prevents ear/cap false positives)
+                if lm is not None and len(lm) >= 5:
+                    le, re, nose_pt, ml_pt, mr_pt = lm
+                    # 1. Eyes must be vertically above mouth corners
+                    if min(le[1], re[1]) >= min(ml_pt[1], mr_pt[1]):
+                        continue
+                    # 2. Nose must be between eyes and mouth
+                    if nose_pt[1] <= min(le[1], re[1]) or nose_pt[1] >= max(ml_pt[1], mr_pt[1]):
+                        continue
+                    # 3. Eye distance must be anatomically proportional
+                    e_dist = float(np.linalg.norm(re - le))
+                    if e_dist < 18 or e_dist > bw * 0.85:
+                        continue
+
+                raw_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
+
+        # Sort descending by candidate area
         raw_candidates.sort(key=lambda item: item[0], reverse=True)
 
-        for idx, (area, box, prob, lm) in enumerate(raw_candidates):
+        # Non-Maximum Suppression (NMS) & Proximity Filtering
+        suppressed_candidates = []
+        for cand in raw_candidates:
+            c_area, c_box, c_prob, c_lm = cand
+            keep = True
+            for kept in suppressed_candidates:
+                k_area, k_box, k_prob, k_lm = kept
+                iou = compute_iou(c_box, k_box)
+                if iou > 0.15:
+                    keep = False
+                    break
+                # Center-containment check: reject candidate if its center is inside or adjacent to a larger face
+                cx_c = (c_box[0] + c_box[2]) / 2.0
+                cy_c = (c_box[1] + c_box[3]) / 2.0
+                margin = 30
+                if (k_box[0] - margin <= cx_c <= k_box[2] + margin and
+                    k_box[1] - margin <= cy_c <= k_box[3] + margin):
+                    keep = False
+                    break
+            if keep:
+                suppressed_candidates.append(cand)
+
+        for idx, (area, box, prob, lm) in enumerate(suppressed_candidates):
             bx1, by1, bx2, by2 = box
             bw, bh = bx2 - bx1, by2 - by1
 
-            # 1. Precision Chin-Line Anthropometric Face Framing (clips strictly above hand/fist on chin)
+            # Precision Anthropometric Face Framing (supports caps, hats, and tilt while preserving chin line)
             if lm is not None and len(lm) >= 5:
                 le = np.array(lm[0], dtype=np.float32)
                 re = np.array(lm[1], dtype=np.float32)
                 nose = np.array(lm[2], dtype=np.float32)
+                ml = np.array(lm[3], dtype=np.float32)
+                mr = np.array(lm[4], dtype=np.float32)
                 eye_cx = (le[0] + re[0]) / 2.0
                 eye_cy = (le[1] + re[1]) / 2.0
                 eye_dist = max(10.0, float(np.linalg.norm(re - le)))
-                # Anchor bottom precisely at chin line (nose + 0.58*eye_dist), strictly excluding hands/knuckles
+
+                # Capture full forehead/cap visor without clipping
+                top_y = max(0, min(by1, int(eye_cy - 1.25 * eye_dist)))
+                mouth_y = max(ml[1], mr[1])
+                bottom_y = min(h, int(max(mouth_y + 0.38 * eye_dist, nose[1] + 0.65 * eye_dist)))
+
                 ui_box = [
                     int(max(0, eye_cx - 1.15 * eye_dist)),
-                    int(max(0, eye_cy - 1.10 * eye_dist)),
+                    int(top_y),
                     int(min(w, eye_cx + 1.15 * eye_dist)),
-                    int(min(h, nose[1] + 0.58 * eye_dist)),
+                    int(bottom_y),
                 ]
             else:
                 head_w = bw * 1.05
