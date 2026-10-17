@@ -30,8 +30,10 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 import uvicorn
 import yaml
+from PIL import Image
 
 # Optional ML imports with graceful degradation
 try:
@@ -111,6 +113,7 @@ DEFAULT_AUDIO_SAMPLE_RATE: int = 16000
 DEFAULT_AUDIO_DURATION_SEC: float = 4.0
 DEFAULT_AUDIO_SAMPLES: int = int(DEFAULT_AUDIO_SAMPLE_RATE * DEFAULT_AUDIO_DURATION_SEC)
 MAX_VIDEO_FRAMES: int = int(os.getenv("MAX_VIDEO_FRAMES", "8" if (os.getenv("RENDER") or os.getenv("LIGHTWEIGHT_VIDEO") == "1") else "16"))
+MAX_VIDEO_FRAME_DIM: int = 1280
 VIDEO_IMAGE_SIZE: int = 224
 
 
@@ -315,19 +318,9 @@ def init_audio_model() -> None:
         return
 
     if not audio_model_path.exists():
-        logger.info("Audio model checkpoint not found at '%s'. Initializing CRNN-GRU architecture (<5MB RAM).", audio_model_path)
-        try:
-            fallback_model = RNNAudioClassifier(num_classes=2)
-            fallback_model.to(models.device)
-            fallback_model.eval()
-            models.audio_model = fallback_model
-            models.audio_model_type = "recurrent_rnn_gru"
-            logger.info("Audio RNNAudioClassifier initialized successfully on %s.", models.device)
-            return
-        except Exception as f_err:
-            models.audio_error = f"Audio fallback initialization failed: {f_err}"
-            logger.warning(models.audio_error)
-            return
+        models.audio_error = f"Audio model checkpoint not found: {audio_model_path}"
+        logger.error(models.audio_error)
+        return
 
     try:
         logger.info("Loading audio PyTorch checkpoint from %s", audio_model_path)
@@ -335,23 +328,44 @@ def init_audio_model() -> None:
 
         if isinstance(checkpoint, nn.Module):
             model = checkpoint
-        elif isinstance(checkpoint, dict) and "rnn" in str(checkpoint.get("model_type", "")).lower():
-            model = RNNAudioClassifier(num_classes=2)
-            state_dict = checkpoint.get("model_state_dict", checkpoint)
-            model.load_state_dict(state_dict, strict=False)
-            models.audio_model_type = "recurrent_rnn_gru"
         else:
             state_dict = checkpoint.get("state_dict", checkpoint.get("model_state_dict", checkpoint))
-            if any("rnn." in k or "conv." in k for k in state_dict.keys()):
+            if not isinstance(state_dict, dict):
+                raise ValueError("Audio checkpoint does not contain a state dictionary.")
+            state_dict = {
+                key.removeprefix("module."): value
+                for key, value in state_dict.items()
+            }
+            declared_type = str(checkpoint.get("model_type", "")).lower()
+            if "rnn" in declared_type or any(key.startswith("rnn.") for key in state_dict):
                 model = RNNAudioClassifier(num_classes=2)
                 models.audio_model_type = "recurrent_rnn_gru"
-            elif any("features." in k for k in state_dict.keys()):
+            elif any(key.startswith("features.") for key in state_dict):
                 model = LightweightAudioClassifier(num_classes=2)
                 models.audio_model_type = "lightweight_cnn"
+            elif any(key.startswith("backbone.encoder.") for key in state_dict):
+                from audio.src.model import Wav2Vec2AudioClassifier
+
+                model_config = checkpoint.get("model_config")
+                if not isinstance(model_config, dict):
+                    raise ValueError(
+                        "Wav2Vec2 checkpoint is missing its serialized backbone config."
+                    )
+                training_config = checkpoint.get("config", {})
+                if not isinstance(training_config, dict):
+                    raise ValueError("Wav2Vec2 checkpoint contains an invalid training config.")
+                model = Wav2Vec2AudioClassifier(
+                    model_name=str(training_config.get("model_name", "facebook/wav2vec2-base")),
+                    num_classes=2,
+                    freeze_backbone=False,
+                    backbone_config=model_config,
+                )
+                models.audio_model_type = "wav2vec2"
             else:
-                model = RNNAudioClassifier(num_classes=2)
-                models.audio_model_type = "recurrent_rnn_gru"
-            model.load_state_dict(state_dict, strict=False)
+                raise ValueError(
+                    "Unsupported audio checkpoint architecture; refusing to serve random weights."
+                )
+            model.load_state_dict(state_dict, strict=True)
 
         model.to(models.device)
         model.eval()
@@ -362,14 +376,11 @@ def init_audio_model() -> None:
         gc.collect()
         logger.info("Audio %s model loaded successfully on %s.", models.audio_model_type, models.device)
     except Exception as exc:
-        logger.warning("Audio checkpoint load failed: %s. Falling back to RNNAudioClassifier.", exc)
-        fallback_model = RNNAudioClassifier(num_classes=2)
-        fallback_model.to(models.device)
-        fallback_model.eval()
-        models.audio_model = fallback_model
-        models.audio_model_type = "recurrent_rnn_gru"
+        models.audio_error = f"Audio checkpoint load failed: {exc}"
+        logger.error(models.audio_error, exc_info=True)
+        models.audio_model = None
+        models.audio_model_type = None
         gc.collect()
-        logger.info("Audio RNNAudioClassifier fallback ready.")
 
 
 def init_video_model() -> None:
@@ -440,20 +451,9 @@ def init_video_model() -> None:
         return
 
     if not video_model_path.exists():
-        logger.warning("Video model checkpoint not found at '%s'. Initializing baseline EfficientNet architecture.", video_model_path)
-        try:
-            fallback_v_model = create_video_classifier(num_classes=2)
-            if fallback_v_model is not None:
-                fallback_v_model.to(models.device)
-                fallback_v_model.eval()
-                models.video_model = fallback_v_model
-                models.video_model_type = "pytorch_backbone"
-                logger.info("Video baseline model initialized successfully on %s.", models.device)
-                return
-        except Exception as f_err:
-            models.video_error = f"Video checkpoint missing and fallback failed: {f_err}"
-            logger.warning(models.video_error)
-            return
+        models.video_error = f"Video model checkpoint not found: {video_model_path}"
+        logger.error(models.video_error)
+        return
 
     try:
         logger.info("Loading video PyTorch checkpoint from %s", video_model_path)
@@ -483,8 +483,7 @@ def init_video_model() -> None:
                         clean_state_dict[k_clean.replace("backbone.", "")] = v
                     else:
                         clean_state_dict[k] = v
-            missing, unexpected = model.load_state_dict(clean_state_dict, strict=False)
-            logger.info("Video model loaded: %d/%d keys matched (%d missing, %d unexpected).", len(model_keys) - len(missing), len(model_keys), len(missing), len(unexpected))
+            model.load_state_dict(clean_state_dict, strict=True)
 
         model.to(models.device)
         model.eval()
@@ -762,6 +761,14 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
                 ret, frame = cap.read()
                 if ret and frame is not None:
+                    h, w = frame.shape[:2]
+                    scale = min(1.0, MAX_VIDEO_FRAME_DIM / max(h, w))
+                    if scale < 1.0:
+                        frame = cv2.resize(
+                            frame,
+                            (int(w * scale), int(h * scale)),
+                            interpolation=cv2.INTER_AREA,
+                        )
                     sampled_frames_bgr.append(frame)
         else:
             # Fallback for streams without total_frames metadata
@@ -773,6 +780,14 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
                 if not ret:
                     break
                 if frame_idx % step == 0:
+                    h, w = frame.shape[:2]
+                    scale = min(1.0, MAX_VIDEO_FRAME_DIM / max(h, w))
+                    if scale < 1.0:
+                        frame = cv2.resize(
+                            frame,
+                            (int(w * scale), int(h * scale)),
+                            interpolation=cv2.INTER_AREA,
+                        )
                     sampled_frames_bgr.append(frame)
                 frame_idx += 1
     finally:
@@ -823,13 +838,8 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
             except Exception as exc:
                 logger.debug("MTCNN detection failed on frame: %s", exc)
 
-        # Fallback to intelligent upper-center crop (faces in video calls/WhatsApp/selfies are in upper-center)
         if face_crop is None or face_crop.size == 0:
-            crop_dim = min(h, w)
-            center_x = w // 2
-            sx = max(0, min(w - crop_dim, center_x - crop_dim // 2))
-            sy = max(0, int(h * 0.05)) if h > w else 0
-            face_crop = frame_rgb[sy : sy + crop_dim, sx : sx + crop_dim]
+            continue
 
         # Resize to 224x224
         resized = cv2.resize(face_crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
@@ -839,8 +849,49 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
         transposed = np.transpose(norm_face, (2, 0, 1))
         processed_faces.append(transposed)
 
+    if not processed_faces:
+        raise ValueError("No face was detected in the sampled video frames.")
+
     batch_array = np.stack(processed_faces, axis=0).astype(np.float32)
     return batch_array, len(processed_faces)
+
+
+def infer_audio_batch(waveform_batch: np.ndarray) -> float:
+    """Return spoof probability for a preprocessed audio batch."""
+    if models.audio_onnx_session is not None:
+        input_name = models.audio_onnx_session.get_inputs()[0].name
+        outputs = models.audio_onnx_session.run(None, {input_name: waveform_batch})
+        logits = outputs[0]
+        exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+        probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+        return float(probs[0, 1])
+
+    if models.audio_model is not None and torch is not None:
+        with torch.inference_mode():
+            tensor_input = torch.from_numpy(waveform_batch).to(models.device)
+            logits = models.audio_model(tensor_input)
+            return float(F.softmax(logits, dim=-1)[0, 1].item())
+
+    raise RuntimeError("Audio model is unavailable.")
+
+
+def infer_video_batch(frame_batch: np.ndarray) -> float:
+    """Return mean fake probability for a batch of detected face crops."""
+    if models.video_onnx_session is not None:
+        input_name = models.video_onnx_session.get_inputs()[0].name
+        outputs = models.video_onnx_session.run(None, {input_name: frame_batch})
+        logits = outputs[0]
+        exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+        probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+        return float(np.mean(probs[:, 1]))
+
+    if models.video_model is not None and torch is not None:
+        with torch.inference_mode():
+            tensor_input = torch.from_numpy(frame_batch).to(models.device)
+            logits = models.video_model(tensor_input)
+            return float(F.softmax(logits, dim=-1)[:, 1].mean().item())
+
+    raise RuntimeError("Video model is unavailable.")
 
 
 @app.get("/", response_class=FileResponse)
@@ -865,11 +916,18 @@ def health_check() -> Dict[str, Any]:
     Returns:
         JSON response with system health and model availability status.
     """
+    audio_architectures = {
+        "wav2vec2": "Wav2Vec2 encoder with classification head",
+        "recurrent_rnn_gru": "Conv1d + bidirectional GRU classifier",
+        "lightweight_cnn": "Lightweight convolutional classifier",
+        "onnx": "ONNX audio classifier",
+    }
+    audio_backend = models.audio_model_type or "unavailable"
     return {
         "status": "ok",
-        "version": "v2.5-rnn-multiface",
-        "audio_model": "CRNN-BiGRU",
-        "audio_architecture": "Recurrent Neural Network (Conv1d + BiGRU)",
+        "version": "v2.5",
+        "audio_model": audio_backend,
+        "audio_architecture": audio_architectures.get(audio_backend, audio_backend),
         "multi_face_support": True,
         "max_video_frames": MAX_VIDEO_FRAMES,
         "mtcnn_enabled": models.mtcnn is not None,
@@ -911,24 +969,8 @@ async def predict_audio(file: UploadFile = File(...)) -> Dict[str, Any]:
     temp_path = await save_upload_to_temp_file(file, ext)
 
     try:
-        waveform_batch, duration = preprocess_audio(temp_path)
-
-        p_spoof: float = 0.0
-
-        if models.audio_onnx_session is not None:
-            input_name = models.audio_onnx_session.get_inputs()[0].name
-            outputs = models.audio_onnx_session.run(None, {input_name: waveform_batch})
-            logits = outputs[0]
-            # Softmax
-            exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
-            probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
-            p_spoof = float(probs[0, 1])
-        elif models.audio_model is not None and torch is not None:
-            with torch.no_grad():
-                tensor_input = torch.from_numpy(waveform_batch).to(models.device)
-                logits = models.audio_model(tensor_input)
-                probs = F.softmax(logits, dim=-1)
-                p_spoof = float(probs[0, 1].item())
+        waveform_batch, duration = await run_in_threadpool(preprocess_audio, temp_path)
+        p_spoof = await run_in_threadpool(infer_audio_batch, waveform_batch)
 
         p_spoof = float(np.clip(p_spoof, 0.0, 1.0))
         verdict = "suspicious" if p_spoof >= 0.5 else "real"
@@ -974,31 +1016,18 @@ async def predict_video(file: UploadFile = File(...)) -> Dict[str, Any]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Video detection model is not loaded. {models.video_error or 'Please train the model first.'}"
         )
+    if models.mtcnn is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Video face detector is not available; refusing to score arbitrary frame crops."
+        )
 
     temp_path = await save_upload_to_temp_file(file, ext)
 
     try:
-        batch_array, frames_used = preprocess_video_frames(temp_path)
-
-        p_fake: float = 0.0
-
-        if models.video_onnx_session is not None:
-            input_name = models.video_onnx_session.get_inputs()[0].name
-            outputs = models.video_onnx_session.run(None, {input_name: batch_array})
-            logits = outputs[0]
-            exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
-            probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
-            p_fake = float(np.mean(probs[:, 1]))
-        elif models.video_model is not None and torch is not None:
-            with torch.no_grad():
-                tensor_input = torch.from_numpy(batch_array).to(models.device)
-                logits = models.video_model(tensor_input)
-                probs = F.softmax(logits, dim=-1)
-                p_fake = float(probs[:, 1].mean().item())
-
+        batch_array, frames_used = await run_in_threadpool(preprocess_video_frames, temp_path)
+        p_fake = await run_in_threadpool(infer_video_batch, batch_array)
         del batch_array
-        if "tensor_input" in locals():
-            del tensor_input
         gc.collect()
 
         p_fake = float(np.clip(p_fake, 0.0, 1.0))
@@ -1007,6 +1036,7 @@ async def predict_video(file: UploadFile = File(...)) -> Dict[str, Any]:
 
         return {
             "p_fake": round(p_fake, 4),
+            "face_detected": True,
             "frames_used": frames_used,
             "verdict": verdict,
             "confidence": confidence,
@@ -1014,6 +1044,11 @@ async def predict_video(file: UploadFile = File(...)) -> Dict[str, Any]:
         }
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     except Exception as exc:
         logger.error("Error during video prediction: %s", exc, exc_info=True)
         raise HTTPException(
@@ -1401,42 +1436,6 @@ async def predict_frame(
                     logger.debug("CLAHE contrast pass successfully detected %d face(s).", len(valid_face_crops))
         except Exception as clahe_exc:
             logger.debug("CLAHE face detection exception: %s", clahe_exc)
-
-    # High-speed geometric center fallback ONLY IF MTCNN model was not initialized
-    if not valid_face_crops:
-        if models.mtcnn is None:
-            crop_dim = min(h, w)
-            center_x = w // 2
-            sq_x1 = max(0, min(w - crop_dim, center_x - crop_dim // 2))
-            sq_y1 = max(0, int(h * 0.05)) if h > w else 0
-            sq_x2 = min(w, sq_x1 + crop_dim)
-            sq_y2 = min(h, sq_y1 + crop_dim)
-            crop = frame_rgb[sq_y1:sq_y2, sq_x1:sq_x2]
-            if crop is not None and crop.size > 0:
-                thumb_b64 = None
-                try:
-                    thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), (72, 72), interpolation=cv2.INTER_AREA)
-                    _, thumb_buf = cv2.imencode('.jpg', thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                    thumb_b64 = "data:image/jpeg;base64," + base64.b64encode(thumb_buf).decode('ascii')
-                except Exception:
-                    pass
-
-                resized = cv2.resize(crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
-                norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
-                transposed = np.transpose(norm_face, (2, 0, 1))
-
-                valid_face_crops.append({
-                    "ui_box": [int(w * 0.15), int(h * 0.05), int(w * 0.85), int(h * 0.85)],
-                    "raw_box": [sq_x1, sq_y1, sq_x2, sq_y2],
-                    "crop": crop,
-                    "transposed": transposed,
-                    "thumbnail": thumb_b64,
-                    "center": [center_x, int((sq_y1 + sq_y2) / 2)],
-                    "size": [crop_dim, crop_dim],
-                    "prob": 0.9,
-                    "lm": None,
-                    "sharpness": 100.0,
-                })
 
     # CRITICAL SAFETY: If zero human faces detected in frame, return no_face immediately
     if not valid_face_crops:
