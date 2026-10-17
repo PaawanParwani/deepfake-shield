@@ -5,13 +5,13 @@
   if (window.__HV_SHIELD_INJECTED__) return;
   window.__HV_SHIELD_INJECTED__ = true;
 
-  console.log("%c[Deepfake Shield]%c Real-Time Zero-Lag Meeting Shield Active", "color: #3b82f6; font-weight: bold;", "color: inherit;");
+  console.log("%c[Deepfake Shield]%c Zero-Lag Meeting Shield Active with Emotion & Biometric Tracking", "color: #3b82f6; font-weight: bold;", "color: inherit;");
 
   let config = {
     enabled: true,
     backendUrl: "https://deepfake-shield-vyaq.onrender.com",
-    scanIntervalMs: 500,        // Fast 0.5s polling for instant detection
-    scanIntervalLockedMs: 800,  // Fast 0.8s verification when locked
+    scanIntervalMs: 220,        // Rapid 0.22s polling for instant discovery
+    scanIntervalLockedMs: 600,  // Continuous 0.6s verification when locked
     sensitivityThreshold: 0.88,
     debug: true
   };
@@ -23,7 +23,6 @@
   let overlayRoot = null;
   let dockPill = null;
   let animFrameId = null;
-  let isNativeDetecting = false;
   let consecutiveNoFaceCount = 0;
   let candidateIndex = 0;
 
@@ -31,22 +30,30 @@
   const trackedFaces = new Map();
   let faceIdCounter = 0;
 
-  // Native Chromium FaceDetector (Hardware-Accelerated)
-  let nativeFaceDetector = null;
-  if (typeof window.FaceDetector !== "undefined") {
-    try {
-      nativeFaceDetector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 4 });
-      console.log("%c[Deepfake Shield]%c Native Chromium FaceDetector active (0ms hardware tracking)", "color: #10b981; font-weight: bold;", "color: inherit;");
-    } catch {
-      nativeFaceDetector = null;
-    }
-  }
+  // Local 60 FPS Optical Follower Canvas (128x96 for sub-pixel pattern matching)
+  const TRACK_W = 128;
+  const TRACK_H = 96;
+  const trackCanvas = document.createElement("canvas");
+  trackCanvas.width = TRACK_W;
+  trackCanvas.height = TRACK_H;
+  const trackCtx = trackCanvas.getContext("2d", { willReadFrequently: true });
+  let lastOpticalTrackTime = 0;
 
   // Diagnostic Debug Logger
   function debugLog(...args) {
     if (config.debug) {
       console.log("%c[Deepfake Shield Debug]", "color: #0ea5e9; font-weight: bold;", ...args);
     }
+  }
+
+  function escapeHTML(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   // Sync extension storage config
@@ -80,11 +87,10 @@
     return overlayRoot;
   }
 
-  // Pre-allocated offscreen canvas (max 320px for ~9KB ultra-fast network transfer)
+  // High-Resolution 540p Compact Frame Capture (~25KB, pristine facial texture)
   const offscreenCanvas = document.createElement("canvas");
   const offscreenCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
 
-  // High-speed compressed frame capture (< 10KB payload)
   function captureCompactFrame(video) {
     if (!video || video.paused || video.ended || video.readyState < 1) return null;
     const vw = video.videoWidth;
@@ -92,19 +98,22 @@
     if (!vw || !vh || vw < 40 || vh < 40) return null;
 
     try {
-      const maxDim = 320;
+      const maxDim = 540;
       const scale = Math.min(1.0, maxDim / Math.max(vw, vh));
-      const targetW = Math.max(140, Math.round(vw * scale));
-      const targetH = Math.max(100, Math.round(vh * scale));
+      const targetW = Math.max(160, Math.round(vw * scale));
+      const targetH = Math.max(120, Math.round(vh * scale));
 
       if (offscreenCanvas.width !== targetW || offscreenCanvas.height !== targetH) {
         offscreenCanvas.width = targetW;
         offscreenCanvas.height = targetH;
       }
 
+      offscreenCtx.imageSmoothingEnabled = true;
+      offscreenCtx.imageSmoothingQuality = "medium";
       offscreenCtx.drawImage(video, 0, 0, targetW, targetH);
+
       return {
-        dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.62),
+        dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.82),
         capturedW: targetW,
         capturedH: targetH
       };
@@ -112,6 +121,53 @@
       debugLog("Frame capture exception:", err);
       return null;
     }
+  }
+
+  // Extract participant name directly from Google Meet container DOM
+  function getParticipantName(video) {
+    try {
+      let container = video.closest('[data-participant-id], [data-tile-id], .a37T0e, .d2h49b, [role="listitem"]');
+      if (!container) {
+        let p = video.parentElement;
+        while (p && p !== document.body && p.children.length < 5) {
+          p = p.parentElement;
+        }
+        container = p || video.parentElement;
+      }
+
+      if (container) {
+        const candidates = container.querySelectorAll(
+          '.zWGUib, [data-self-name], [data-hovercard-id], span.notranslate, .p2hjIb, .XE8e1e, [aria-label]'
+        );
+        for (const el of candidates) {
+          const text = (el.getAttribute("data-self-name") || el.getAttribute("aria-label") || el.textContent || "").trim();
+          if (
+            text &&
+            text.length >= 2 &&
+            text.length < 40 &&
+            !text.includes(":") &&
+            !text.includes("%") &&
+            !text.includes("Target") &&
+            !text.toLowerCase().includes("turn off") &&
+            !text.toLowerCase().includes("turn on") &&
+            !text.toLowerCase().includes("microphone") &&
+            !text.toLowerCase().includes("camera") &&
+            !text.toLowerCase().includes("pin") &&
+            !text.toLowerCase().includes("options")
+          ) {
+            const clean = text.replace(/\s*\(You\)$/i, "").trim();
+            if (clean && clean.toLowerCase() !== "you") return clean;
+          }
+        }
+      }
+
+      const selfEl = document.querySelector('[data-self-name], .zWGUib');
+      if (selfEl) {
+        const name = (selfEl.getAttribute("data-self-name") || selfEl.textContent || "").trim().replace(/\s*\(You\)$/i, "").trim();
+        if (name && name.length >= 2 && name.toLowerCase() !== "you") return name;
+      }
+    } catch {}
+    return "Verified Participant";
   }
 
   // Robust Mirroring Detection (Inspects entire ancestor DOM chain up to body)
@@ -211,7 +267,7 @@
     };
   }
 
-  // Strictly verify element visibility (eliminates hidden background videos in Google Meet)
+  // Strictly verify element visibility
   function isElementVisible(el) {
     if (!el || !document.body.contains(el)) return false;
     try {
@@ -236,16 +292,19 @@
     });
   }
 
-  // Smart Video Selection: Automatically finds the active webcam or participant tile
+  // Smart Video Selection
   function findPrimaryVideo() {
     const candidates = getCandidateVideos();
     if (candidates.length === 0) return null;
 
     if (activeVideo && candidates.includes(activeVideo)) {
-      if (consecutiveNoFaceCount >= 3 && candidates.length > 1) {
+      if (trackedFaces.size > 0) {
+        return activeVideo;
+      }
+      if (consecutiveNoFaceCount >= 2 && candidates.length > 1) {
         candidateIndex = (candidateIndex + 1) % candidates.length;
         const nextVideo = candidates[candidateIndex];
-        debugLog(`Cycling search to next video tile (${candidateIndex + 1}/${candidates.length})`);
+        debugLog(`Cycling search to candidate video (${candidateIndex + 1}/${candidates.length})`);
         return nextVideo;
       }
       return activeVideo;
@@ -350,35 +409,41 @@
     hudBadge.style.top = `${Math.round(rect.top + 14)}px`;
   }
 
-  // Multi-Face Tracking & Coordinate Mapping (Ghost-Box-Free Centroid Matching)
+  // Multi-Face Tracking & Coordinate Mapping
   function processDetections(data, video, capturedW, capturedH, clientLatency) {
     if (!hudBadge) return;
     const root = getOrCreateOverlayRoot();
 
-    const { p_fake, verdict, confidence, face_detected, bounding_box, latency_ms } = data;
-    const fw = data.frame_width || capturedW || 320;
-    const fh = data.frame_height || capturedH || 180;
+    const { p_fake, verdict, confidence, face_detected, bounding_box, latency_ms, emotion } = data;
+    const fw = data.frame_width || capturedW || 540;
+    const fh = data.frame_height || capturedH || 360;
     const mirrored = isVideoMirrored(video);
     const geom = getRenderedVideoGeometry(video, fw, fh);
+    const participantName = getParticipantName(video);
 
-    debugLog(`Video Element: ${Math.round(geom.width)}x${Math.round(geom.height)} | Stream: ${fw}x${fh} | Fit: ${geom.objectFit} | Mirrored: ${mirrored}`);
+    debugLog(`Video Element: ${Math.round(geom.width)}x${Math.round(geom.height)} | Stream: ${fw}x${fh} | Mirrored: ${mirrored}`);
 
-    // CASE 1: ZERO FACES DETECTED
+    // ZERO FACES DETECTED (Requires 5 consecutive frames before dropping to prevent momentary flicker)
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
       consecutiveNoFaceCount++;
-      hudBadge.className = "hv-hud-badge hv-no-face";
-      hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
-      hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
-      if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
-      }
-
-      // Promptly clean up all tracked faces
-      for (const [id, face] of trackedFaces.entries()) {
-        if (face.overlayElement && face.overlayElement.parentNode) {
-          face.overlayElement.parentNode.removeChild(face.overlayElement);
+      if (consecutiveNoFaceCount >= 5) {
+        hudBadge.className = "hv-hud-badge hv-no-face";
+        hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
+        hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
+        if (dockPill) {
+          dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
         }
-        trackedFaces.delete(id);
+
+        for (const [id, face] of trackedFaces.entries()) {
+          if (face.overlayElement && face.overlayElement.parentNode) {
+            face.overlayElement.parentNode.removeChild(face.overlayElement);
+          }
+          trackedFaces.delete(id);
+        }
+      } else {
+        for (const face of trackedFaces.values()) {
+          face.opacity = Math.max(0.3, face.opacity - 0.15);
+        }
       }
       return;
     }
@@ -393,7 +458,8 @@
       p_fake: p_fake,
       raw_p_fake: p_fake,
       sharpness: 100,
-      confidence: confidence
+      confidence: confidence,
+      emotion: emotion || "Focused / Calm 👤"
     }];
 
     debugLog(`Incoming Detections (${latency_ms || clientLatency}ms): ${incomingFaces.length} Face(s)`);
@@ -401,7 +467,7 @@
     const now = performance.now();
     const matchedTrackIds = new Set();
 
-    // Map incoming detections to screen coordinates
+    // Map incoming detections to screen coordinates and frame normalized coords
     const mappedDetections = incomingFaces.map((det, idx) => {
       const [bx1, by1, bx2, by2] = det.bounding_box;
       const effX1 = mirrored ? (fw - bx2) : bx1;
@@ -414,6 +480,10 @@
       const centerX = screenX + screenW / 2;
       const centerY = screenY + screenH / 2;
 
+      // Center in raw video coordinates (0.0 - 1.0) for optical template tracking
+      const normCx = ((bx1 + bx2) / 2) / fw;
+      const normCy = ((by1 + by2) / 2) / fh;
+
       return {
         det,
         targetIndex: idx + 1,
@@ -422,19 +492,19 @@
         screenW,
         screenH,
         centerX,
-        centerY
+        centerY,
+        normCx,
+        normCy
       };
     });
 
-    // ROBUST 1-TO-1 MATCHING (Prevents ghost boxes when user moves their head)
+    // 1-TO-1 MATCHING (Prevents ghost boxes)
     mappedDetections.forEach((mDet) => {
       let bestMatch = null;
 
-      // Special rule: if single face detected and single face tracked, match unconditionally!
       if (mappedDetections.length === 1 && trackedFaces.size === 1) {
         bestMatch = Array.from(trackedFaces.values())[0];
       } else {
-        // Multi-face: match by nearest centroid
         let minDistance = Infinity;
         for (const [id, face] of trackedFaces.entries()) {
           if (matchedTrackIds.has(id)) continue;
@@ -451,36 +521,54 @@
       if (!bestMatch) {
         faceIdCounter++;
         const newId = `track_${faceIdCounter}`;
+
         const overlayEl = document.createElement("div");
         overlayEl.className = "hv-face-overlay";
         overlayEl.style.opacity = "0";
+
+        const tagEl = document.createElement("div");
+        tagEl.className = "hv-face-tag";
+        overlayEl.appendChild(tagEl);
+
         root.appendChild(overlayEl);
 
         bestMatch = {
           id: newId,
           label: `Target #${mDet.targetIndex}`,
+          userName: participantName,
           current: { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH },
           target: { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH },
           history: [],
           smoothedScore: mDet.det.p_fake || 0.0,
           consecutiveHighRisk: 0,
           verdict: mDet.det.verdict || "authentic",
-          confidence: mDet.det.confidence || 90.0,
+          confidence: mDet.det.confidence || 100.0,
           sharpness: mDet.det.sharpness || 100,
+          emotion: mDet.det.emotion || "Focused / Calm 👤",
           lastSeen: now,
           opacity: 1.0,
-          overlayElement: overlayEl
+          overlayElement: overlayEl,
+          tagElement: tagEl,
+          template: null,
+          templateNormPos: { cx: mDet.normCx, cy: mDet.normCy }
         };
         trackedFaces.set(newId, bestMatch);
       }
 
       matchedTrackIds.add(bestMatch.id);
       bestMatch.lastSeen = now;
+      bestMatch.userName = participantName;
+      bestMatch.emotion = mDet.det.emotion || "Focused / Calm 👤";
       bestMatch.label = `Target #${mDet.targetIndex}`;
       bestMatch.target = { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH };
       bestMatch.sharpness = mDet.det.sharpness || 100;
+      bestMatch.templateNormPos = { cx: mDet.normCx, cy: mDet.normCy };
+      bestMatch.opacity = 1.0;
 
-      // Temporal history buffer (5 frames)
+      // Extract fresh optical tracking template on ground-truth update
+      extractFaceTemplate(video, bestMatch, mDet.normCx, mDet.normCy);
+
+      // Temporal smoothing (5 frames)
       bestMatch.history.push({
         p_fake: mDet.det.p_fake || 0.0,
         verdict: mDet.det.verdict || "authentic",
@@ -488,12 +576,9 @@
       });
       if (bestMatch.history.length > 5) bestMatch.history.shift();
 
-      // Rolling average of p_fake
       const avgScore = bestMatch.history.reduce((acc, h) => acc + h.p_fake, 0) / bestMatch.history.length;
       bestMatch.smoothedScore = avgScore;
 
-      // Dual-Threshold Hysteresis:
-      // Require 4 consecutive frames with p_fake >= 0.88 before declaring Deepfake
       if ((mDet.det.p_fake || 0) >= 0.88) {
         bestMatch.consecutiveHighRisk++;
       } else {
@@ -512,7 +597,6 @@
       }
     });
 
-    // Immediately remove any tracked faces that were NOT in the current frame detection
     for (const [id, face] of trackedFaces.entries()) {
       if (!matchedTrackIds.has(id)) {
         if (face.overlayElement && face.overlayElement.parentNode) {
@@ -527,6 +611,8 @@
     const totalFaces = activeList.length;
     const suspiciousFaces = activeList.filter((f) => f.verdict === "suspicious");
     const uncertainFaces = activeList.filter((f) => f.verdict === "uncertain");
+    const primaryEmotion = activeList.length > 0 ? activeList[0].emotion : (emotion || "Focused / Calm 👤");
+    const displayName = participantName && participantName !== "Verified Participant" ? participantName.toUpperCase() : "VERIFIED HUMAN";
 
     if (suspiciousFaces.length > 0) {
       const maxRisk = Math.max(...suspiciousFaces.map((f) => f.confidence));
@@ -538,22 +624,18 @@
       }
     } else if (uncertainFaces.length > 0) {
       hudBadge.className = "hv-hud-badge hv-uncertain";
-      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `ANALYZING (${totalFaces} TARGETS)` : "ANALYZING (UNCERTAIN)";
-      hudBadge.querySelector("#hv-badge-score").textContent = `Verifying Video... (${latency_ms || clientLatency}ms)`;
+      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `ANALYZING (${totalFaces} TARGETS)` : "ANALYZING VIDEO";
+      hudBadge.querySelector("#hv-badge-score").textContent = `${primaryEmotion} (${latency_ms || clientLatency}ms)`;
       if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = "Analyzing Video Consistency...";
+        dockPill.querySelector("#hv-dock-sub").textContent = `Analyzing Video Consistency • ${primaryEmotion}`;
       }
     } else {
-      const minAuthConf = totalFaces > 0 ? Math.min(...activeList.map((f) => f.confidence)) : 95.0;
+      const minAuthConf = totalFaces > 0 ? Math.min(...activeList.map((f) => f.confidence)) : 100.0;
       hudBadge.className = "hv-hud-badge hv-authentic";
-      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `VERIFIED (${totalFaces} TARGETS)` : "VERIFIED HUMAN";
-      let bioText = `${minAuthConf}% Authentic`;
-      if (data.bio_metrics && data.bio_metrics.blink_count !== undefined && data.bio_metrics.blink_count > 0) {
-        bioText += ` • ${data.bio_metrics.blink_count} Blinks`;
-      }
-      hudBadge.querySelector("#hv-badge-score").textContent = `${bioText} (${latency_ms || clientLatency}ms)`;
+      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `${displayName} (${totalFaces} TARGETS)` : `${displayName} • VERIFIED`;
+      hudBadge.querySelector("#hv-badge-score").textContent = `${minAuthConf}% Authentic • ${primaryEmotion}`;
       if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = `${totalFaces} Face(s) Protected`;
+        dockPill.querySelector("#hv-dock-sub").textContent = `${displayName} Protected • ${primaryEmotion}`;
       }
     }
 
@@ -562,93 +644,125 @@
         type: "DETECTION_UPDATE",
         payload: {
           verdict: suspiciousFaces.length > 0 ? "suspicious" : (uncertainFaces.length > 0 ? "uncertain" : "authentic"),
-          confidence: totalFaces > 0 ? activeList[0].confidence : 95.0
+          confidence: totalFaces > 0 ? activeList[0].confidence : 100.0,
+          emotion: primaryEmotion
         }
       }).catch(() => {});
     }
   }
 
-  // Serialized Native Face Detection Loop (Strictly Non-Piling, 0% CPU accumulation)
-  async function runNativeDetectionLoop() {
-    if (!config.enabled || !nativeFaceDetector || !activeVideo || activeVideo.paused || activeVideo.ended || activeVideo.readyState < 2) {
-      setTimeout(runNativeDetectionLoop, 150);
-      return;
-    }
+  // Extract a 16x16 grayscale template of the face center on the 128x96 tracking canvas
+  function extractFaceTemplate(video, face, normCx, normCy) {
+    try {
+      trackCtx.drawImage(video, 0, 0, TRACK_W, TRACK_H);
+      const px = Math.max(8, Math.min(TRACK_W - 9, Math.round(normCx * TRACK_W)));
+      const py = Math.max(8, Math.min(TRACK_H - 9, Math.round(normCy * TRACK_H)));
 
-    if (isNativeDetecting) return;
-    isNativeDetecting = true;
+      const patch = trackCtx.getImageData(px - 8, py - 8, 16, 16).data;
+      const gray = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) {
+        const r = patch[i * 4];
+        const g = patch[i * 4 + 1];
+        const b = patch[i * 4 + 2];
+        gray[i] = (r * 77 + g * 150 + b * 29) >> 8;
+      }
+      face.template = gray;
+      face.templateNormPos = { cx: normCx, cy: normCy };
+    } catch {}
+  }
+
+  // 60 FPS Optical Template Matching (Tracks head motion between network responses with 0ms lag)
+  function runOpticalTemplateTracker(video) {
+    if (!video || video.paused || video.ended || video.readyState < 2 || trackedFaces.size === 0) return;
+    const now = performance.now();
+    if (now - lastOpticalTrackTime < 16) return; // ~60 FPS
+    lastOpticalTrackTime = now;
 
     try {
-      const detections = await nativeFaceDetector.detect(activeVideo);
-      if (detections && detections.length > 0 && trackedFaces.size > 0) {
-        const mirrored = isVideoMirrored(activeVideo);
-        const geom = getRenderedVideoGeometry(activeVideo, activeVideo.videoWidth, activeVideo.videoHeight);
-        const vw = activeVideo.videoWidth;
-        const vh = activeVideo.videoHeight;
+      trackCtx.drawImage(video, 0, 0, TRACK_W, TRACK_H);
+      const frameData = trackCtx.getImageData(0, 0, TRACK_W, TRACK_H).data;
+      const vw = video.videoWidth || 640;
+      const vh = video.videoHeight || 480;
+      const geom = getRenderedVideoGeometry(video, vw, vh);
+      const mirrored = isVideoMirrored(video);
 
-        detections.forEach((d) => {
-          const b = d.boundingBox;
-          const bx1 = b.x;
-          const by1 = b.y;
-          const bx2 = b.x + b.width;
-          const by2 = b.y + b.height;
+      for (const face of trackedFaces.values()) {
+        if (!face.template) continue;
 
-          const effX1 = mirrored ? (vw - bx2) : bx1;
-          const effX2 = mirrored ? (vw - bx1) : bx2;
+        const curPX = Math.round(face.templateNormPos.cx * TRACK_W);
+        const curPY = Math.round(face.templateNormPos.cy * TRACK_H);
 
-          const screenX = geom.left + geom.offsetX + (effX1 / vw) * geom.renderW;
-          const screenY = geom.top + geom.offsetY + (by1 / vh) * geom.renderH;
-          const screenW = ((effX2 - effX1) / vw) * geom.renderW;
-          const screenH = ((by2 - by1) / vh) * geom.renderH;
-          const cX = screenX + screenW / 2;
-          const cY = screenY + screenH / 2;
+        // Search +/- 10px horizontally, +/- 8px vertically (corresponds to ~80px on 1080p screen)
+        let bestSAD = Infinity;
+        let bestX = curPX;
+        let bestY = curPY;
 
-          // Update closest tracked face immediately
-          for (const face of trackedFaces.values()) {
-            const fCX = face.current.x + face.current.w / 2;
-            const fCY = face.current.y + face.current.h / 2;
-            if (trackedFaces.size === 1 || Math.hypot(fCX - cX, fCY - cY) < 200) {
-              face.target.x = screenX;
-              face.target.y = screenY;
-              face.target.w = screenW;
-              face.target.h = screenH;
-              break;
+        for (let dy = -8; dy <= 8; dy += 2) {
+          const sy = curPY + dy - 8;
+          if (sy < 0 || sy + 16 > TRACK_H) continue;
+          for (let dx = -10; dx <= 10; dx += 2) {
+            const sx = curPX + dx - 8;
+            if (sx < 0 || sx + 16 > TRACK_W) continue;
+
+            let sad = 0;
+            for (let ty = 0; ty < 16; ty += 2) {
+              const fRow = (sy + ty) * TRACK_W + sx;
+              const tRow = ty * 16;
+              for (let tx = 0; tx < 16; tx += 2) {
+                const pIdx = (fRow + tx) * 4;
+                const lum = (frameData[pIdx] * 77 + frameData[pIdx + 1] * 150 + frameData[pIdx + 2] * 29) >> 8;
+                sad += Math.abs(lum - face.template[tRow + tx]);
+              }
+            }
+
+            if (sad < bestSAD) {
+              bestSAD = sad;
+              bestX = curPX + dx;
+              bestY = curPY + dy;
             }
           }
-        });
+        }
+
+        // 64 sampled pixels: threshold < 35 avg diff per pixel indicates valid face track
+        if (bestSAD < 64 * 35) {
+          const newNormCx = bestX / TRACK_W;
+          const newNormCy = bestY / TRACK_H;
+          face.templateNormPos.cx = newNormCx;
+          face.templateNormPos.cy = newNormCy;
+
+          // Map normalized video coordinate to current screen pixels
+          const effNormX = mirrored ? (1.0 - newNormCx) : newNormCx;
+          const screenCX = geom.left + geom.offsetX + effNormX * geom.renderW;
+          const screenCY = geom.top + geom.offsetY + newNormCy * geom.renderH;
+
+          face.target.x = screenCX - face.target.w / 2;
+          face.target.y = screenCY - face.target.h / 2;
+        }
       }
-    } catch {
-      // ignore
-    } finally {
-      isNativeDetecting = false;
-      setTimeout(runNativeDetectionLoop, 80);
-    }
+    } catch {}
   }
 
-  if (nativeFaceDetector) {
-    runNativeDetectionLoop();
-  }
-
-  // 60 FPS Adaptive Snap Lerp (Snaps in 1-2 frames when user moves their head)
+  // 60 FPS Instant Snap Animation Loop
   function animationLoop() {
     if (config.enabled && activeVideo && document.body.contains(activeVideo)) {
       updateHUDBadgePosition();
+      runOpticalTemplateTracker(activeVideo);
 
       for (const [id, face] of trackedFaces.entries()) {
         const dx = face.target.x - face.current.x;
         const dy = face.target.y - face.current.y;
-        const dist = Math.hypot(dx, dy);
+        const dw = face.target.w - face.current.w;
+        const dh = face.target.h - face.current.h;
 
-        // Instant Snap Lerp:
-        // Follows head movements immediately within 1-2 frames (16-32ms)
-        let lerpFactor = dist > 10 ? 0.88 : 0.40;
+        // Snappy 0.85 lerp factor on motion for instant 1-frame snap
+        const lerpFactor = 0.85;
 
         face.current.x += dx * lerpFactor;
         face.current.y += dy * lerpFactor;
-        face.current.w += (face.target.w - face.current.w) * lerpFactor;
-        face.current.h += (face.target.h - face.current.h) * lerpFactor;
+        face.current.w += dw * lerpFactor;
+        face.current.h += dh * lerpFactor;
 
-        face.opacity = Math.min(1.0, face.opacity + 0.2);
+        face.opacity = Math.min(1.0, face.opacity + 0.25);
 
         const el = face.overlayElement;
         if (el) {
@@ -659,15 +773,36 @@
           el.style.height = `${Math.round(face.current.h)}px`;
           el.style.opacity = face.opacity.toFixed(2);
 
+          const nameDisplay = face.userName || "Verified Participant";
+          const emotionDisplay = face.emotion || "Focused / Calm 👤";
+
           if (face.verdict === "suspicious") {
             el.className = "hv-face-overlay hv-suspicious-box";
-            el.setAttribute("data-label", `${face.label}: ${face.confidence}% Risk (Deepfake)`);
+            if (face.tagElement) {
+              face.tagElement.innerHTML = `
+                <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
+                <span class="hv-tag-verdict hv-v-susp">${face.confidence}% Risk (Deepfake)</span>
+                <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
+              `;
+            }
           } else if (face.verdict === "uncertain") {
             el.className = "hv-face-overlay hv-uncertain-box";
-            el.setAttribute("data-label", `${face.label}: Analyzing (${face.confidence}%)`);
+            if (face.tagElement) {
+              face.tagElement.innerHTML = `
+                <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
+                <span class="hv-tag-verdict hv-v-unc">Analyzing (${face.confidence}%)</span>
+                <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
+              `;
+            }
           } else {
             el.className = "hv-face-overlay";
-            el.setAttribute("data-label", `${face.label}: ${face.confidence}% Real`);
+            if (face.tagElement) {
+              face.tagElement.innerHTML = `
+                <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
+                <span class="hv-tag-verdict hv-v-auth">${face.confidence}% Real</span>
+                <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
+              `;
+            }
           }
         }
       }
@@ -712,7 +847,7 @@
       </div>
       <div class="hv-status-label">
         <span id="hv-dock-text">Deepfake Shield Active</span>
-        <span class="hv-sub" id="hv-dock-sub">Multi-Face AR Shield Active</span>
+        <span class="hv-sub" id="hv-dock-sub">Emotion & Biometric AR Shield Active</span>
       </div>
       <button class="hv-btn-toggle hv-active" id="hv-btn-dock-toggle">Shield ON</button>
     `;
@@ -802,7 +937,7 @@
       btn.className = "hv-btn-toggle hv-active";
       btn.textContent = "Shield ON";
       label.textContent = "Deepfake Shield Active";
-      sub.textContent = "Multi-Face AR Shield Active";
+      sub.textContent = "Emotion & Biometric AR Shield Active";
     } else {
       btn.className = "hv-btn-toggle";
       btn.textContent = "Paused";
@@ -811,18 +946,15 @@
     }
   }
 
-  // Debounced DOM Scanner (Only runs 1.0s after DOM stops changing)
-  let domDebounce = null;
+  // Fast DOM Scanner (Instant discovery when camera connects)
   const observer = new MutationObserver(() => {
-    if (domDebounce) clearTimeout(domDebounce);
-    domDebounce = setTimeout(() => {
-      if (document.hidden) return;
-      const v = findPrimaryVideo();
-      if (v && v !== activeVideo) {
-        activeVideo = v;
-        attachHUD(v);
-      }
-    }, 1000);
+    if (document.hidden) return;
+    const v = findPrimaryVideo();
+    if (v && v !== activeVideo) {
+      activeVideo = v;
+      attachHUD(v);
+      analyzeLiveFrame();
+    }
   });
 
   observer.observe(document.body || document.documentElement, {
@@ -833,7 +965,7 @@
   // Start 60 FPS animation loop
   animFrameId = requestAnimationFrame(animationLoop);
 
-  // Dynamic Detection Loop (Guarded against overlapping calls)
+  // Dynamic Detection Loop (220ms searching for instant lock, 600ms locked)
   function scheduleNextScan() {
     const isLocked = trackedFaces.size > 0;
     const interval = isLocked ? config.scanIntervalLockedMs : config.scanIntervalMs;

@@ -393,10 +393,10 @@ def init_video_model() -> None:
                 keep_all=True,
                 post_process=False,
                 thresholds=[0.45, 0.55, 0.55],
-                min_face_size=16,
+                min_face_size=28,
                 device=models.device
             )
-            logger.info("MTCNN multi-face detector initialized on %s (keep_all=True, adaptive sensitivity [0.45, 0.55, 0.55]).", models.device)
+            logger.info("MTCNN multi-face detector initialized on %s (keep_all=True, adaptive sensitivity [0.45, 0.55, 0.55], min_size=28).", models.device)
         except Exception as exc:
             logger.warning("Could not initialize MTCNN face detector: %s", exc)
 
@@ -1056,7 +1056,49 @@ async def predict_frame(
     imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
-    valid_face_crops: List[Dict[str, Any]] = []
+    def compute_emotion_metrics(landmarks, bw: int, bh: int) -> Dict[str, Any]:
+        """Compute affective expression / emotion dynamics from MTCNN 5 facial landmarks."""
+        if landmarks is None or len(landmarks) < 5:
+            return {"emotion": "Focused / Natural", "sentiment": "neutral", "smile_score": 0.5}
+
+        try:
+            le = np.array(landmarks[0], dtype=np.float32)
+            re = np.array(landmarks[1], dtype=np.float32)
+            nose = np.array(landmarks[2], dtype=np.float32)
+            ml = np.array(landmarks[3], dtype=np.float32)
+            mr = np.array(landmarks[4], dtype=np.float32)
+
+            eye_dist = max(1.0, float(np.linalg.norm(re - le)))
+            mouth_w = float(np.linalg.norm(mr - ml))
+            smile_ratio = mouth_w / eye_dist
+
+            mouth_center = (ml + mr) / 2.0
+            nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
+            open_ratio = nose_to_mouth / eye_dist
+
+            if smile_ratio >= 0.82:
+                emotion = "Smiling 😊"
+                sentiment = "positive"
+            elif open_ratio >= 0.72:
+                emotion = "Surprised 😲"
+                sentiment = "alert"
+            elif open_ratio >= 0.58 and smile_ratio >= 0.73:
+                emotion = "Speaking / Engaged 💬"
+                sentiment = "active"
+            elif smile_ratio >= 0.78:
+                emotion = "Cheerful 😊"
+                sentiment = "positive"
+            else:
+                emotion = "Focused / Calm 👤"
+                sentiment = "neutral"
+
+            return {
+                "emotion": emotion,
+                "sentiment": sentiment,
+                "smile_score": round(smile_ratio, 2)
+            }
+        except Exception:
+            return {"emotion": "Focused / Calm 👤", "sentiment": "neutral", "smile_score": 0.5}
 
     def extract_crops(cand_boxes, cand_probs, cand_landmarks, source_rgb):
         extracted = []
@@ -1132,6 +1174,8 @@ async def predict_frame(
                 norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
                 transposed = np.transpose(norm_face, (2, 0, 1))
 
+                emotion_info = compute_emotion_metrics(lm, bw, bh)
+
                 extracted.append({
                     "ui_box": ui_box,
                     "raw_box": box,
@@ -1143,6 +1187,9 @@ async def predict_frame(
                     "prob": prob,
                     "lm": lm,
                     "sharpness": sharpness,
+                    "emotion": emotion_info["emotion"],
+                    "sentiment": emotion_info["sentiment"],
+                    "smile_score": emotion_info["smile_score"],
                 })
 
                 # Update physiological tracker on primary face if present
@@ -1153,6 +1200,8 @@ async def predict_frame(
                         logger.debug("Physiological update error: %s", p_err)
 
         return extracted
+
+    valid_face_crops: List[Dict[str, Any]] = []
 
     if models.mtcnn is not None:
         try:
@@ -1291,6 +1340,9 @@ async def predict_frame(
             "sharpness": round(sharpness, 1),
             "verdict": str(v_verdict),
             "confidence": float(conf),
+            "emotion": c_info.get("emotion", "Focused / Natural"),
+            "sentiment": c_info.get("sentiment", "neutral"),
+            "smile_score": c_info.get("smile_score", 0.5),
             "center": [int(v) for v in c_info["center"]],
             "size": [int(v) for v in c_info["size"]],
             "thumbnail": c_info["thumbnail"],
@@ -1325,6 +1377,8 @@ async def predict_frame(
         except Exception as b_err:
             logger.debug("Biological score error: %s", b_err)
 
+    primary_emotion = faces_list[0]["emotion"] if faces_list else "Focused / Calm 👤"
+
     return {
         "p_fake": round(max_p_fake, 4),
         "verdict": overall_verdict,
@@ -1332,6 +1386,7 @@ async def predict_frame(
         "face_detected": True,
         "face_count": face_count,
         "bounding_box": bounding_box,
+        "emotion": primary_emotion,
         "faces": faces_list,
         "auto_focus": {
             "status": "locked",

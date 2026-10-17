@@ -152,50 +152,93 @@
 
 /* Uncertain Box State (Yellow/Amber HUD) */
 .hv-face-overlay.hv-uncertain-box {
-  border: 2px solid #f59e0b;
+  border-color: #f59e0b;
   box-shadow: 0 0 20px rgba(245, 158, 11, 0.5), inset 0 0 15px rgba(245, 158, 11, 0.15);
 }
-
 .hv-face-overlay.hv-uncertain-box::before,
 .hv-face-overlay.hv-uncertain-box::after {
   border-color: #fbbf24;
 }
 
-.hv-face-overlay.hv-uncertain-box[data-label]::after {
-  color: #fbbf24;
-  border-color: #f59e0b;
-}
-
 /* Suspicious Box State (Red Alert HUD) */
 .hv-face-overlay.hv-suspicious-box {
-  border: 2px solid #ef4444;
+  border-color: #ef4444;
   box-shadow: 0 0 25px rgba(239, 68, 68, 0.6), inset 0 0 20px rgba(239, 68, 68, 0.2);
   animation: hv-box-glow 0.8s infinite alternate;
 }
-
 .hv-face-overlay.hv-suspicious-box::before,
 .hv-face-overlay.hv-suspicious-box::after {
   border-color: #f87171;
 }
 
-.hv-face-overlay[data-label]::after {
-  content: attr(data-label);
+/* Dedicated Biometric Status & Emotion Tag */
+.hv-face-tag {
   position: absolute;
-  top: -24px;
+  top: -28px;
   left: 0;
-  background: rgba(15, 23, 42, 0.92);
-  color: #34d399;
-  border: 1px solid #34d399;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid #10b981;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ecfdf5;
   white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 10px rgba(16, 185, 129, 0.3);
+  pointer-events: none;
+  z-index: 2147483643;
 }
 
-.hv-face-overlay.hv-suspicious-box[data-label]::after {
-  color: #f87171;
+.hv-face-overlay.hv-uncertain-box .hv-face-tag {
+  border-color: #f59e0b;
+  color: #fef3c7;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 10px rgba(245, 158, 11, 0.3);
+}
+
+.hv-face-overlay.hv-suspicious-box .hv-face-tag {
   border-color: #ef4444;
+  color: #fef2f2;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 15px rgba(239, 68, 68, 0.5);
+}
+
+.hv-tag-identity {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.hv-tag-verdict {
+  font-weight: 600;
+  opacity: 0.95;
+}
+
+.hv-tag-verdict.hv-v-auth {
+  color: #34d399;
+}
+
+.hv-tag-verdict.hv-v-unc {
+  color: #fbbf24;
+}
+
+.hv-tag-verdict.hv-v-susp {
+  color: #f87171;
+}
+
+.hv-tag-emotion {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffffff;
 }
 
 /* Draggable Control Pill in Google Meet */
