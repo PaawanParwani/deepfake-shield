@@ -1132,29 +1132,31 @@ async def predict_frame(
             bx1, by1, bx2, by2 = box
             bw, bh = bx2 - bx1, by2 - by1
 
-            # 1. Golden-Ratio Anthropometric Face Framing (frames head, hair, chin without sagging into hand)
+            # 1. Precision Chin-Line Anthropometric Face Framing (clips strictly above hand/fist on chin)
             if lm is not None and len(lm) >= 5:
                 le = np.array(lm[0], dtype=np.float32)
                 re = np.array(lm[1], dtype=np.float32)
+                nose = np.array(lm[2], dtype=np.float32)
                 eye_cx = (le[0] + re[0]) / 2.0
                 eye_cy = (le[1] + re[1]) / 2.0
                 eye_dist = max(10.0, float(np.linalg.norm(re - le)))
+                # Anchor bottom precisely at chin line (nose + 0.58*eye_dist), strictly excluding hands/knuckles
                 ui_box = [
-                    int(max(0, eye_cx - 1.25 * eye_dist)),
-                    int(max(0, eye_cy - 1.25 * eye_dist)),
-                    int(min(w, eye_cx + 1.25 * eye_dist)),
-                    int(min(h, eye_cy + 1.55 * eye_dist)),
+                    int(max(0, eye_cx - 1.15 * eye_dist)),
+                    int(max(0, eye_cy - 1.10 * eye_dist)),
+                    int(min(w, eye_cx + 1.15 * eye_dist)),
+                    int(min(h, nose[1] + 0.58 * eye_dist)),
                 ]
             else:
-                head_w = bw * 1.15
-                head_h = head_w * 1.18
+                head_w = bw * 1.05
+                head_h = head_w * 1.10
                 cx_h = (bx1 + bx2) / 2.0
                 cy_h = (by1 + by2) / 2.0
                 ui_box = [
                     int(max(0, cx_h - head_w / 2.0)),
-                    int(max(0, cy_h - head_h * 0.52)),
+                    int(max(0, cy_h - head_h * 0.50)),
                     int(min(w, cx_h + head_w / 2.0)),
-                    int(min(h, cy_h + head_h * 0.48)),
+                    int(min(h, cy_h + head_h * 0.40)),
                 ]
 
             # 2. Aspect-Ratio Preserving Square Crop (matches FF++ training distribution)
