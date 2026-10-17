@@ -151,6 +151,9 @@ class ModelContainer:
         self.physio_tracker: Any = None
         self.self_training_buffer: Any = None
         self.multimodal_fusion: Any = None
+        self.emotion_model: Any = None
+        self.emotion_processor: Any = None
+        self.emotion_labels: Optional[Dict[int, str]] = None
 
 
 models = ModelContainer()
@@ -495,6 +498,33 @@ def init_video_model() -> None:
         logger.error(models.video_error, exc_info=True)
 
 
+def init_emotion_model() -> None:
+    """Initialize pretrained RAF-DB Neural Facial Emotion Classifier."""
+    models.emotion_model = None
+    models.emotion_processor = None
+    models.emotion_labels = None
+    skip_emotion = bool(os.getenv("SKIP_EMOTION_MODEL") == "1")
+    if skip_emotion:
+        logger.info("SKIP_EMOTION_MODEL flag active: using landmark heuristics for emotion.")
+        return
+
+    try:
+        from transformers import AutoImageProcessor, AutoModelForImageClassification
+        model_name = os.getenv("EMOTION_MODEL_NAME", "carlosleao/RAFDB-Facial-Expression-Recognition")
+        logger.info("Loading neural Facial Emotion Recognition (RAF-DB) model: %s", model_name)
+        processor = AutoImageProcessor.from_pretrained(model_name)
+        model = AutoModelForImageClassification.from_pretrained(model_name)
+        model.to(models.device)
+        model.eval()
+
+        models.emotion_processor = processor
+        models.emotion_model = model
+        models.emotion_labels = model.config.id2label
+        logger.info("Neural Facial Emotion Recognition (RAF-DB) model loaded successfully on %s.", models.device)
+    except Exception as exc:
+        logger.warning("Could not initialize neural emotion model (falling back to landmark metrics): %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application startup and shutdown lifecycle events.
@@ -509,6 +539,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting up Human Verification Backend service...")
     init_audio_model()
     init_video_model()
+    init_emotion_model()
     yield
     logger.info("Shutting down Human Verification Backend service...")
 
@@ -848,6 +879,9 @@ def health_check() -> Dict[str, Any]:
         "device": models.device,
         "audio_status": "ready" if (models.audio_model or models.audio_onnx_session) else (models.audio_error or "not loaded"),
         "video_status": "ready" if (models.video_model or models.video_onnx_session) else (models.video_error or "not loaded"),
+        "emotion_model": "RAF-DB Neural ViT Classifier" if models.emotion_model is not None else "Landmark Heuristics",
+        "emotion_dataset": "RAF-DB (Real-world Affective Faces Database - 29.6k samples)",
+        "emotion_status": "ready" if models.emotion_model is not None else "fallback",
     }
 
 
@@ -1056,59 +1090,109 @@ async def predict_frame(
     imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
-    def compute_emotion_metrics(landmarks, bw: int, bh: int) -> Dict[str, Any]:
-        """Compute affective expression / emotion dynamics with occlusion awareness."""
-        if landmarks is None or len(landmarks) < 5:
-            return {"emotion": "Focused / Calm 👤", "sentiment": "neutral", "smile_score": 0.5}
+    def compute_emotion_metrics(crop_rgb, landmarks, bw: int, bh: int) -> Dict[str, Any]:
+        """Compute affective expression using the RAF-DB neural classifier with occlusion fallback."""
+        emotion = "Focused / Calm 👤"
+        sentiment = "neutral"
+        smile_score = 0.5
+        confidence = 90.0
 
-        try:
-            le = np.array(landmarks[0], dtype=np.float32)
-            re = np.array(landmarks[1], dtype=np.float32)
-            nose = np.array(landmarks[2], dtype=np.float32)
-            ml = np.array(landmarks[3], dtype=np.float32)
-            mr = np.array(landmarks[4], dtype=np.float32)
+        # 1. Check Hand-to-Face / Chin Occlusion using landmarks if present
+        is_hand_occluded = False
+        open_ratio = 0.5
+        smile_ratio = 0.5
+        if landmarks is not None and len(landmarks) >= 5:
+            try:
+                le = np.array(landmarks[0], dtype=np.float32)
+                re = np.array(landmarks[1], dtype=np.float32)
+                nose = np.array(landmarks[2], dtype=np.float32)
+                ml = np.array(landmarks[3], dtype=np.float32)
+                mr = np.array(landmarks[4], dtype=np.float32)
 
-            eye_dist = max(1.0, float(np.linalg.norm(re - le)))
-            mouth_w = float(np.linalg.norm(mr - ml))
-            smile_ratio = mouth_w / eye_dist
+                eye_dist = max(1.0, float(np.linalg.norm(re - le)))
+                mouth_w = float(np.linalg.norm(mr - ml))
+                smile_ratio = mouth_w / eye_dist
+                mouth_center = (ml + mr) / 2.0
+                nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
+                open_ratio = nose_to_mouth / eye_dist
 
-            mouth_center = (ml + mr) / 2.0
-            nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
-            open_ratio = nose_to_mouth / eye_dist
+                is_hand_occluded = open_ratio < 0.45 or abs(ml[1] - mr[1]) / eye_dist > 0.35
+            except Exception:
+                pass
 
-            # Mouth corner elevation relative to mouth center (true smile curvature)
-            corner_lift = (mouth_center[1] - (ml[1] + mr[1]) / 2.0) / eye_dist
-
-            # Chin resting / Hand-to-face occlusion detection
-            is_hand_occluded = open_ratio < 0.45 or abs(ml[1] - mr[1]) / eye_dist > 0.35
-
-            if is_hand_occluded:
-                emotion = "Thinking / Focused 🤔"
-                sentiment = "neutral"
-            elif smile_ratio >= 0.95 and corner_lift >= 0.03:
-                # Genuine smile: wide mouth AND elevated corners
-                emotion = "Smiling 😊"
-                sentiment = "positive"
-            elif open_ratio >= 0.95:
-                # Genuine extreme jaw drop for surprise (never triggered by normal resting expression or cap shadow)
-                emotion = "Surprised 😲"
-                sentiment = "alert"
-            elif open_ratio >= 0.72 and smile_ratio < 0.92:
-                # Vertical lip separation during active speech
-                emotion = "Speaking / Engaged 💬"
-                sentiment = "active"
-            else:
-                # Calibrated baseline resting expression
-                emotion = "Focused / Calm 👤"
-                sentiment = "neutral"
-
+        if is_hand_occluded:
             return {
-                "emotion": emotion,
-                "sentiment": sentiment,
-                "smile_score": round(smile_ratio, 2)
+                "emotion": "Thinking / Focused 🤔",
+                "sentiment": "neutral",
+                "smile_score": round(smile_ratio, 2),
+                "model": "hand_occlusion_guard"
             }
-        except Exception:
-            return {"emotion": "Focused / Calm 👤", "sentiment": "neutral", "smile_score": 0.5}
+
+        # 2. RAF-DB Neural Facial Emotion Classifier
+        if models.emotion_model is not None and models.emotion_processor is not None and crop_rgb is not None:
+            try:
+                inputs = models.emotion_processor(images=crop_rgb, return_tensors="pt")
+                inputs = {k: v.to(models.device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    logits = models.emotion_model(**inputs).logits
+                    probs = torch.softmax(logits, dim=-1)[0]
+                    top_idx = int(torch.argmax(probs))
+                    raw_label = models.emotion_labels.get(top_idx, "Neutral") if models.emotion_labels else "Neutral"
+                    conf_pct = float(probs[top_idx]) * 100.0
+
+                label_lower = raw_label.lower()
+                is_speaking = open_ratio >= 0.72 and smile_ratio < 0.92
+
+                if "happ" in label_lower and float(probs[top_idx]) >= 0.35:
+                    emotion = "Smiling 😊"
+                    sentiment = "positive"
+                    smile_score = round(float(probs[top_idx]), 2)
+                elif "surpris" in label_lower and float(probs[top_idx]) >= 0.50:
+                    emotion = "Surprised 😲"
+                    sentiment = "alert"
+                elif is_speaking:
+                    emotion = "Speaking / Engaged 💬"
+                    sentiment = "active"
+                elif "anger" in label_lower and float(probs[top_idx]) >= 0.45:
+                    emotion = "Intense / Focused 🧐"
+                    sentiment = "neutral"
+                elif "sad" in label_lower and float(probs[top_idx]) >= 0.45:
+                    emotion = "Pensive / Focused 👤"
+                    sentiment = "neutral"
+                else:
+                    emotion = "Focused / Calm 👤"
+                    sentiment = "neutral"
+
+                return {
+                    "emotion": emotion,
+                    "sentiment": sentiment,
+                    "smile_score": round(smile_score, 2),
+                    "model": "RAF-DB Neural ViT",
+                    "confidence": round(conf_pct, 1)
+                }
+            except Exception as e_err:
+                logger.debug("Neural emotion inference failed: %s", e_err)
+
+        # 3. Geometric heuristic fallback if neural model is not active
+        if open_ratio >= 0.95:
+            emotion = "Surprised 😲"
+            sentiment = "alert"
+        elif smile_ratio >= 0.95:
+            emotion = "Smiling 😊"
+            sentiment = "positive"
+        elif open_ratio >= 0.72 and smile_ratio < 0.92:
+            emotion = "Speaking / Engaged 💬"
+            sentiment = "active"
+        else:
+            emotion = "Focused / Calm 👤"
+            sentiment = "neutral"
+
+        return {
+            "emotion": emotion,
+            "sentiment": sentiment,
+            "smile_score": round(smile_ratio, 2),
+            "model": "heuristic_fallback"
+        }
 
     def compute_iou(boxA, boxB):
         xA = max(boxA[0], boxB[0])
@@ -1270,7 +1354,7 @@ async def predict_frame(
                 norm_upper = (upper_resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
                 upper_transposed = np.transpose(norm_upper, (2, 0, 1))
 
-                emotion_info = compute_emotion_metrics(lm, bw, bh)
+                emotion_info = compute_emotion_metrics(crop, lm, bw, bh)
 
                 extracted.append({
                     "ui_box": ui_box,
