@@ -356,7 +356,7 @@
     inFlight = true;
     const reqStart = performance.now();
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const timeoutId = setTimeout(() => controller.abort(), 9000);
 
     try {
       const resp = await fetch(`${config.backendUrl}/predict/frame`, {
@@ -370,7 +370,11 @@
       if (resp.ok) {
         const data = await resp.json();
         const clientLatency = Math.round(performance.now() - reqStart);
-        processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
+        try {
+          processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
+        } catch (procErr) {
+          console.error("[Deepfake Shield] UI processing exception:", procErr);
+        }
       } else {
         debugLog(`Server responded with HTTP ${resp.status}`);
       }
@@ -659,6 +663,8 @@
     if (displayName.includes("REFRAME") || displayName === "YOU") {
       displayName = "VERIFIED HUMAN";
     }
+
+    const primaryEmotion = (activeList.length > 0 && activeList[0].emotion) || emotion || "Focused / Calm 👤";
 
     if (suspiciousFaces.length > 0) {
       const maxRisk = Math.max(...suspiciousFaces.map((f) => f.confidence));
