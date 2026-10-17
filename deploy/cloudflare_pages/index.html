@@ -1302,8 +1302,7 @@
         return filename.slice((filename.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
       }
 
-      // Backend Health Check & Continuous Resilient Heartbeat
-      let healthTimeoutTimer = null;
+      // Check on page load, config changes, or manual retry; do not keep free instances warm.
       let isCheckingHealth = false;
 
       async function checkHealth() {
@@ -1312,15 +1311,13 @@
 
         if (!statusDot.classList.contains("online")) {
           statusDot.className = "status-dot";
-          statusText.textContent = "Connecting (Waking server)...";
+          statusText.textContent = "Checking backend...";
         }
 
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 90000);
         try {
-          const controller = new AbortController();
-          // Render free tier cold start takes up to 30s to spin up from sleep
-          const timeoutId = setTimeout(() => controller.abort(), 35000);
           const res = await fetch(`${backendUrl}/health`, { method: "GET", signal: controller.signal });
-          clearTimeout(timeoutId);
 
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
@@ -1336,17 +1333,11 @@
           } else {
             statusText.textContent = "Online (Models Pending)";
           }
-
-          // Heartbeat every 25 seconds to keep Render warm
-          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
-          healthTimeoutTimer = setTimeout(checkHealth, 25000);
         } catch (err) {
           statusDot.className = "status-dot offline";
-          statusText.textContent = "Connecting (Waking server)...";
-          // Auto-retry every 4 seconds until connected
-          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
-          healthTimeoutTimer = setTimeout(checkHealth, 4000);
+          statusText.textContent = "Backend unavailable (click to retry)";
         } finally {
+          clearTimeout(timeoutId);
           isCheckingHealth = false;
         }
       }
@@ -1355,10 +1346,8 @@
       const statusBadge = document.getElementById("statusBadge");
       if (statusBadge) {
         statusBadge.style.cursor = "pointer";
-        statusBadge.title = "Click to ping backend server";
+        statusBadge.title = "Click to check or retry the backend";
         statusBadge.addEventListener("click", () => {
-          if (healthTimeoutTimer) clearTimeout(healthTimeoutTimer);
-          isCheckingHealth = false;
           checkHealth();
         });
       }

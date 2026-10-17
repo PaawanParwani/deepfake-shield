@@ -37,7 +37,8 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] `/health` reports the loaded audio architecture dynamically instead of always claiming CRNN-BiGRU
 - [x] `demo/frontend/index.html` glassmorphic UI, audio/video upload, live scoring
 - [x] Cloudflare Pages frontend deployed from `main` and verified at `https://deepfake-shield.pages.dev` (HTTP 200; updated copy served)
-- [x] Backend fixes deployed to Render from `main` (`aad14ab`); `/health` and `/` return HTTP 200, the loaded CRNN-BiGRU and video models are ready, and CORS preflight from the Pages origin passes. This deployment still uses the existing CRNN audio checkpoint; the full wav2vec2 training result is pending
+- [x] Backend fixes deployed to Render from `main` (`ec06dbf`); `/health` and `/` returned HTTP 200, the loaded CRNN-BiGRU and video models were ready, and CORS preflight from the Pages origin passed. This deployment still uses the existing CRNN audio checkpoint; the full wav2vec2 training result is pending
+- [x] Removed the frontend's 25-second Render keep-alive and 4-second health retry loop; free-tier health checks now run on load/config save or when the status badge is clicked, avoiding unnecessary instance-hours and request bursts. Render billing showed 6.07/750 free instance hours used at the time checked, so monthly free hours were not exhausted
 - [x] Chrome extension prototype (`extension/` Manifest V3, anonymous face labels and live status HUD; live meeting integration remains outside locked project scope)
 - [x] Combine verdicts (either modality > 0.5 => Suspicious) + Calibrated Bayesian Reliability Gating
 - [x] Script 60-90 s demo video for YC / academic presentation (`docs/15_DEMO_VIDEO_SCRIPT.md`)
