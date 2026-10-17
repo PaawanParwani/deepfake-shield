@@ -15,5 +15,7 @@ services:
         value: "1"
       - key: LIGHTWEIGHT_VIDEO
         value: "1"
+      - key: SKIP_EMOTION_MODEL
+        value: "1"
       - key: MALLOC_TRIM_THRESHOLD_
         value: "65536"

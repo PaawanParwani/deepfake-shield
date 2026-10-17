@@ -499,13 +499,13 @@ def init_video_model() -> None:
 
 
 def init_emotion_model() -> None:
-    """Initialize pretrained RAF-DB Neural Facial Emotion Classifier."""
+    """Initialize lightweight emotion classifier or fallback to zero-RAM calibrated engine."""
     models.emotion_model = None
     models.emotion_processor = None
     models.emotion_labels = None
-    skip_emotion = bool(os.getenv("SKIP_EMOTION_MODEL") == "1")
+    skip_emotion = bool(os.getenv("SKIP_EMOTION_MODEL", "1") == "1")
     if skip_emotion:
-        logger.info("SKIP_EMOTION_MODEL flag active: using landmark heuristics for emotion.")
+        logger.info("SKIP_EMOTION_MODEL active: using zero-RAM calibrated affective emotion engine (memory safe for 512MB RAM).")
         return
 
     try:
@@ -540,6 +540,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_audio_model()
     init_video_model()
     init_emotion_model()
+    gc.collect()
     yield
     logger.info("Shutting down Human Verification Backend service...")
 
