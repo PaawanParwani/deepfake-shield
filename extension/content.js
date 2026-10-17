@@ -10,8 +10,8 @@
   let config = {
     enabled: true,
     backendUrl: "https://deepfake-shield-vyaq.onrender.com",
-    scanIntervalMs: 700,        // Fast polling for instant detection
-    scanIntervalLockedMs: 1100, // Background verification when locked
+    scanIntervalMs: 500,        // Fast 0.5s polling for instant detection
+    scanIntervalLockedMs: 800,  // Fast 0.8s verification when locked
     sensitivityThreshold: 0.88,
     debug: true
   };
@@ -639,16 +639,9 @@
         const dy = face.target.y - face.current.y;
         const dist = Math.hypot(dx, dy);
 
-        // Snappy Velocity Lerp:
-        // If distance > 60px: snap at 0.85 (catches up in 1-2 frames!)
-        // If distance > 20px: snap at 0.60
-        // Near rest (< 20px): ease at 0.35 to eliminate sensor jitter
-        let lerpFactor = 0.35;
-        if (dist > 60) {
-          lerpFactor = 0.85;
-        } else if (dist > 20) {
-          lerpFactor = 0.60;
-        }
+        // Instant Snap Lerp:
+        // Follows head movements immediately within 1-2 frames (16-32ms)
+        let lerpFactor = dist > 10 ? 0.88 : 0.40;
 
         face.current.x += dx * lerpFactor;
         face.current.y += dy * lerpFactor;

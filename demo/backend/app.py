@@ -464,7 +464,24 @@ def init_video_model() -> None:
                 models.video_error = "Could not instantiate video model architecture."
                 return
             state_dict = checkpoint.get("state_dict", checkpoint.get("model_state_dict", checkpoint))
-            model.load_state_dict(state_dict, strict=False)
+            model_keys = set(model.state_dict().keys())
+            sd_keys = set(state_dict.keys())
+            if len(model_keys.intersection(sd_keys)) >= len(model_keys) * 0.8:
+                clean_state_dict = state_dict
+            else:
+                clean_state_dict = {}
+                for k, v in state_dict.items():
+                    k_clean = k.replace("model.", "").replace("module.", "")
+                    if k_clean in model_keys:
+                        clean_state_dict[k_clean] = v
+                    elif ("backbone." + k_clean) in model_keys:
+                        clean_state_dict["backbone." + k_clean] = v
+                    elif k_clean.replace("backbone.", "") in model_keys:
+                        clean_state_dict[k_clean.replace("backbone.", "")] = v
+                    else:
+                        clean_state_dict[k] = v
+            missing, unexpected = model.load_state_dict(clean_state_dict, strict=False)
+            logger.info("Video model loaded: %d/%d keys matched (%d missing, %d unexpected).", len(model_keys) - len(missing), len(model_keys), len(missing), len(unexpected))
 
         model.to(models.device)
         model.eval()
