@@ -13,10 +13,10 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] Download ASVspoof2019 LA + protocol files
 - [x] `audio/src/dataset.py` with multi-format support (Parquet + FLAC)
 - [x] `audio/src/model.py` wav2vec2 + head
-- [x] `audio/src/train.py` runs end to end with mixed precision
-- [x] Full training run completed (1 epoch on 500 samples, CPU)
-- [x] `audio/src/eval.py`: EER, AUC, accuracy on dev (EER: 27.69%, AUC: 81.21%) and eval (EER: 32.52%)
-- [x] CHECKPOINT: Real EER number saved to `audio/outputs/metrics.json` and `metrics_dev.json`
+- [x] `audio/src/train.py` trains/evaluates configured train/dev splits with class-weighted loss and mixed precision
+- [~] Full ASVspoof2019 LA wav2vec2 fine-tuning and official eval split: full Colab run on the uploaded parquet train/dev splits was started; no completed metrics or official eval result received yet. The repository checkpoint remains identified as CRNN/BiGRU
+- [~] `audio/src/eval.py`: recorded metrics are from a 500-sample dev subset; `metrics.json` reports wav2vec2 while the saved checkpoint is a CRNN, so their provenance is unresolved; rerun after full fine-tuning
+- [~] CHECKPOINT: replace the current CRNN checkpoint and unverified smoke metrics only after full wav2vec2 fine-tuning and official eval
 - [x] `audio/src/attack.py`: PGD + noise sweep (completed)
 - [x] Adversarial results CSV + degradation plot (saved to `audio/outputs/adversarial_results.csv` and `audio_adversarial_degradation.png`)
 - [x] Checkpoint loader support for PyTorch state_dict in demo backend
@@ -26,16 +26,19 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] `video/src/extract_frames.py` with dual layout auto-detection + MTCNN crops
 - [x] `video/src/dataset.py` (strict video identity split)
 - [x] `video/src/model.py` EfficientNet-B0 head
-- [x] `video/src/train.py` end-to-end training (`video/outputs/best_model.pt`)
-- [x] `video/src/eval.py`: frame AUC (67.87%) + video AUC (83.00%), per-method breakdown
+- [~] Full FF++ training across configured manipulation methods: current crops cover 10 of 720 official train identities and 10 of 140 validation identities, with no test crops; training correctly aborts on this incomplete coverage
+- [~] `video/src/eval.py`: all results remain partial-subset validation, not official test results. Colab capped run reported video accuracy 77.69%, video AUC 83.08%, frame accuracy 73.23%, frame AUC 77.37% on 50 real and 12 per manipulation method (98 validation videos); local CPU one-epoch 20/20 pilot reported video accuracy 55%, video AUC 64%, frame accuracy 54.5%, frame AUC 58.5%
 - [x] `video/src/attack.py`: PGD/FGSM + JPEG compression sweep (`video/outputs/adversarial_results.csv` and `adversarial_degradation.png`)
 - [x] Model integration and checkpoint loading verified
 - [x] Fixed Zero-Face safety gate & 1:1 aspect-ratio square crop normalization with replicate padding
 
 ## Demo & Real-Time Deployment (both)
 - [x] `demo/backend/app.py` with `/predict/audio`, `/predict/video`, `/predict/frame`, `/health`, `/physiology/status`, and `/predict/multimodal`
+- [x] `/health` reports the loaded audio architecture dynamically instead of always claiming CRNN-BiGRU
 - [x] `demo/frontend/index.html` glassmorphic UI, audio/video upload, live scoring
-- [x] Real-Time Chrome Extension (`extension/` Manifest V3, auto-detects Google Meet/Zoom/Teams, live AR HUD, popup with webcam test, zero lag, smooth drag)
+- [x] Cloudflare Pages frontend deployed from `main` and verified at `https://deepfake-shield.pages.dev` (HTTP 200; updated copy served)
+- [x] Backend fixes deployed to Render from `main` (`7f2ecbe`); `/health` returns HTTP 200, reports the loaded CRNN-BiGRU and video models, and CORS preflight from the Pages origin passes. This deployment still uses the existing CRNN audio checkpoint; the full wav2vec2 training result is pending
+- [x] Chrome extension prototype (`extension/` Manifest V3, anonymous face labels and live status HUD; live meeting integration remains outside locked project scope)
 - [x] Combine verdicts (either modality > 0.5 => Suspicious) + Calibrated Bayesian Reliability Gating
 - [x] Script 60-90 s demo video for YC / academic presentation (`docs/15_DEMO_VIDEO_SCRIPT.md`)
 
