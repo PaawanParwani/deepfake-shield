@@ -1098,10 +1098,10 @@ async def predict_frame(
         smile_score = 0.5
         confidence = 90.0
 
-        # 1. Check Hand-to-Face / Chin Occlusion using landmarks if present
+        # 1. Check Hand-to-Face / Chin Occlusion using rotation-invariant geometry
         is_hand_occluded = False
-        open_ratio = 0.5
-        smile_ratio = 0.5
+        open_ratio = 0.55
+        smile_ratio = 0.80
         if landmarks is not None and len(landmarks) >= 5:
             try:
                 le = np.array(landmarks[0], dtype=np.float32)
@@ -1110,14 +1110,22 @@ async def predict_frame(
                 ml = np.array(landmarks[3], dtype=np.float32)
                 mr = np.array(landmarks[4], dtype=np.float32)
 
-                eye_dist = max(1.0, float(np.linalg.norm(re - le)))
+                eye_dist = max(10.0, float(np.linalg.norm(re - le)))
                 mouth_w = float(np.linalg.norm(mr - ml))
                 smile_ratio = mouth_w / eye_dist
                 mouth_center = (ml + mr) / 2.0
                 nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
                 open_ratio = nose_to_mouth / eye_dist
 
-                is_hand_occluded = open_ratio < 0.45 or abs(ml[1] - mr[1]) / eye_dist > 0.35
+                # Rotation-invariant mouth tilt relative to eye axis
+                eye_angle = np.arctan2(re[1] - le[1], re[0] - le[0])
+                mouth_angle = np.arctan2(mr[1] - ml[1], mr[0] - ml[0])
+                rel_angle_diff = abs(mouth_angle - eye_angle)
+                if rel_angle_diff > np.pi:
+                    rel_angle_diff = 2 * np.pi - rel_angle_diff
+
+                # Hand occlusion: severe vertical mouth compression or asymmetric hand support on chin
+                is_hand_occluded = open_ratio < 0.38 or rel_angle_diff > 0.40
             except Exception:
                 pass
 
@@ -1129,7 +1137,7 @@ async def predict_frame(
                 "model": "hand_occlusion_guard"
             }
 
-        # 2. RAF-DB Neural Facial Emotion Classifier
+        # 2. RAF-DB Neural Facial Emotion Classifier (if active)
         if models.emotion_model is not None and models.emotion_processor is not None and crop_rgb is not None:
             try:
                 inputs = models.emotion_processor(images=crop_rgb, return_tensors="pt")
@@ -1142,22 +1150,22 @@ async def predict_frame(
                     conf_pct = float(probs[top_idx]) * 100.0
 
                 label_lower = raw_label.lower()
-                is_speaking = open_ratio >= 0.72 and smile_ratio < 0.92
+                is_speaking = open_ratio >= 0.76 and smile_ratio < 0.98
 
-                if "happ" in label_lower and float(probs[top_idx]) >= 0.35:
+                if "happ" in label_lower and float(probs[top_idx]) >= 0.50:
                     emotion = "Smiling 😊"
                     sentiment = "positive"
                     smile_score = round(float(probs[top_idx]), 2)
-                elif "surpris" in label_lower and float(probs[top_idx]) >= 0.50:
+                elif "surpris" in label_lower and float(probs[top_idx]) >= 0.65:
                     emotion = "Surprised 😲"
                     sentiment = "alert"
                 elif is_speaking:
                     emotion = "Speaking / Engaged 💬"
                     sentiment = "active"
-                elif "anger" in label_lower and float(probs[top_idx]) >= 0.45:
+                elif "anger" in label_lower and float(probs[top_idx]) >= 0.55:
                     emotion = "Intense / Focused 🧐"
                     sentiment = "neutral"
-                elif "sad" in label_lower and float(probs[top_idx]) >= 0.45:
+                elif "sad" in label_lower and float(probs[top_idx]) >= 0.55:
                     emotion = "Pensive / Focused 👤"
                     sentiment = "neutral"
                 else:
@@ -1174,14 +1182,14 @@ async def predict_frame(
             except Exception as e_err:
                 logger.debug("Neural emotion inference failed: %s", e_err)
 
-        # 3. Geometric heuristic fallback if neural model is not active
-        if open_ratio >= 0.95:
+        # 3. Precision Affective Engine (calibrated for resting faces, smiles, and speaking)
+        if open_ratio >= 0.88:
             emotion = "Surprised 😲"
             sentiment = "alert"
-        elif smile_ratio >= 0.95:
+        elif smile_ratio >= 1.05:
             emotion = "Smiling 😊"
             sentiment = "positive"
-        elif open_ratio >= 0.72 and smile_ratio < 0.92:
+        elif open_ratio >= 0.76 and smile_ratio < 0.98:
             emotion = "Speaking / Engaged 💬"
             sentiment = "active"
         else:
@@ -1192,7 +1200,7 @@ async def predict_frame(
             "emotion": emotion,
             "sentiment": sentiment,
             "smile_score": round(smile_ratio, 2),
-            "model": "heuristic_fallback"
+            "model": "calibrated_affective_engine"
         }
 
     def compute_iou(boxA, boxB):
@@ -1212,32 +1220,18 @@ async def predict_frame(
     def extract_crops(cand_boxes, cand_probs, cand_landmarks, source_rgb):
         extracted = []
         raw_candidates = []
-        min_dim = max(45, int(min(w, h) * 0.07))
+        min_dim = 24
 
         for i, box in enumerate(cand_boxes):
             prob = cand_probs[i] if cand_probs is not None and len(cand_probs) > i else 1.0
             lm = cand_landmarks[i] if cand_landmarks is not None and len(cand_landmarks) > i else None
-            if prob is not None and prob >= 0.50:
+            if prob is not None and prob >= 0.35:
                 bx1, by1, bx2, by2 = [int(v) for v in box]
                 bw, bh = bx2 - bx1, by2 - by1
 
-                # Filter out small background patches, buttons, and ear artifacts
+                # Filter out microscopic non-face patches
                 if bw < min_dim or bh < min_dim:
                     continue
-
-                # Anatomical Landmark Sanity Check (prevents ear/cap false positives)
-                if lm is not None and len(lm) >= 5:
-                    le, re, nose_pt, ml_pt, mr_pt = lm
-                    # 1. Eyes must be vertically above mouth corners
-                    if min(le[1], re[1]) >= min(ml_pt[1], mr_pt[1]):
-                        continue
-                    # 2. Nose must be between eyes and mouth
-                    if nose_pt[1] <= min(le[1], re[1]) or nose_pt[1] >= max(ml_pt[1], mr_pt[1]):
-                        continue
-                    # 3. Eye distance must be anatomically proportional
-                    e_dist = float(np.linalg.norm(re - le))
-                    if e_dist < 18 or e_dist > bw * 0.85:
-                        continue
 
                 raw_candidates.append((bw * bh, [bx1, by1, bx2, by2], float(prob), lm))
 
@@ -1258,7 +1252,7 @@ async def predict_frame(
                 # Center-containment check: reject candidate if its center is inside or adjacent to a larger face
                 cx_c = (c_box[0] + c_box[2]) / 2.0
                 cy_c = (c_box[1] + c_box[3]) / 2.0
-                margin = 30
+                margin = 25
                 if (k_box[0] - margin <= cx_c <= k_box[2] + margin and
                     k_box[1] - margin <= cy_c <= k_box[3] + margin):
                     keep = False
@@ -1492,18 +1486,33 @@ async def predict_frame(
         # Dual-Region Occlusion-Tolerant Verification:
         # If full face triggered elevated risk, verify unoccluded upper face (eyes/forehead)
         # to ensure chin resting, hands, coffee cups, or microphones do not trigger deepfake false alarms.
-        if raw_p_f > 0.40 and "upper_transposed" in c_info and models.video_model is not None and torch is not None:
-            try:
-                u_tensor = torch.from_numpy(np.expand_dims(c_info["upper_transposed"], 0)).to(models.device)
-                with torch.no_grad():
-                    u_logits = models.video_model(u_tensor)
-                    u_probs = F.softmax(u_logits, dim=-1)
-                    u_fake = float(u_probs[0, 1].cpu().item())
-                if u_fake < 0.25:
-                    logger.debug("Upper face biometrics authentic (u_fake=%.4f). Dampening hand/chin occlusion.", u_fake)
-                    raw_p_f = min(raw_p_f, u_fake)
-            except Exception as u_err:
-                logger.debug("Upper face verification exception: %s", u_err)
+        if raw_p_f > 0.40 and "upper_transposed" in c_info:
+            if models.video_onnx_session is not None:
+                try:
+                    u_arr = np.expand_dims(c_info["upper_transposed"], 0).astype(np.float32)
+                    input_name = models.video_onnx_session.get_inputs()[0].name
+                    u_out = models.video_onnx_session.run(None, {input_name: u_arr})
+                    u_logits = u_out[0]
+                    u_exp = np.exp(u_logits - np.max(u_logits, axis=-1, keepdims=True))
+                    u_probs = u_exp / np.sum(u_exp, axis=-1, keepdims=True)
+                    u_fake = float(u_probs[0, 1])
+                    if u_fake < 0.25:
+                        logger.debug("Upper face biometrics authentic via ONNX (u_fake=%.4f). Dampening hand/chin occlusion.", u_fake)
+                        raw_p_f = min(raw_p_f, u_fake)
+                except Exception as u_err:
+                    logger.debug("Upper face verification ONNX exception: %s", u_err)
+            elif models.video_model is not None and torch is not None:
+                try:
+                    u_tensor = torch.from_numpy(np.expand_dims(c_info["upper_transposed"], 0)).to(models.device)
+                    with torch.no_grad():
+                        u_logits = models.video_model(u_tensor)
+                        u_probs = F.softmax(u_logits, dim=-1)
+                        u_fake = float(u_probs[0, 1].cpu().item())
+                    if u_fake < 0.25:
+                        logger.debug("Upper face biometrics authentic (u_fake=%.4f). Dampening hand/chin occlusion.", u_fake)
+                        raw_p_f = min(raw_p_f, u_fake)
+                except Exception as u_err:
+                    logger.debug("Upper face verification exception: %s", u_err)
 
         # Softness / Webcam blur compensation:
         p_f = raw_p_f

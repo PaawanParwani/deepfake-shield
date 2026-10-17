@@ -304,23 +304,10 @@
     });
   }
 
-  // Smart Video Selection
+  // Smart Video Selection: Prioritize the primary main stage video (largest active video)
   function findPrimaryVideo() {
     const candidates = getCandidateVideos();
     if (candidates.length === 0) return null;
-
-    if (activeVideo && candidates.includes(activeVideo)) {
-      if (trackedFaces.size > 0) {
-        return activeVideo;
-      }
-      if (consecutiveNoFaceCount >= 2 && candidates.length > 1) {
-        candidateIndex = (candidateIndex + 1) % candidates.length;
-        const nextVideo = candidates[candidateIndex];
-        debugLog(`Cycling search to candidate video (${candidateIndex + 1}/${candidates.length})`);
-        return nextVideo;
-      }
-      return activeVideo;
-    }
 
     let best = candidates[0];
     let maxArea = 0;
@@ -332,6 +319,17 @@
         best = v;
       }
     }
+
+    // Sticky lock: If current active video is still valid and at least 70% of maxArea, maintain lock
+    // This stops jitter between similarly-sized grid tiles and NEVER cycles away to a tiny preview tile
+    if (activeVideo && candidates.includes(activeVideo)) {
+      const curRect = activeVideo.getBoundingClientRect();
+      const curArea = curRect.width * curRect.height;
+      if (curArea >= maxArea * 0.70) {
+        return activeVideo;
+      }
+    }
+
     return best;
   }
 
@@ -445,28 +443,23 @@
 
     debugLog(`Video Element: ${Math.round(geom.width)}x${Math.round(geom.height)} | Stream: ${fw}x${fh} | Mirrored: ${mirrored}`);
 
-    // ZERO FACES DETECTED (Requires 5 consecutive frames before dropping to prevent momentary flicker)
+    // ZERO FACES DETECTED: Instant Zero-Ghost Purge
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
       consecutiveNoFaceCount++;
-      if (consecutiveNoFaceCount >= 5) {
-        hudBadge.className = "hv-hud-badge hv-no-face";
-        hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
-        hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
-        if (dockPill) {
-          dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
-        }
+      hudBadge.className = "hv-hud-badge hv-no-face";
+      hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
+      hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
+      if (dockPill) {
+        dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
+      }
 
-        for (const [id, face] of trackedFaces.entries()) {
-          if (face.overlayElement && face.overlayElement.parentNode) {
-            face.overlayElement.parentNode.removeChild(face.overlayElement);
-          }
-          trackedFaces.delete(id);
-        }
-      } else {
-        for (const face of trackedFaces.values()) {
-          face.opacity = Math.max(0.3, face.opacity - 0.15);
+      // Purge all stale boxes and tags immediately from DOM
+      for (const [id, face] of trackedFaces.entries()) {
+        if (face.overlayElement && face.overlayElement.parentNode) {
+          face.overlayElement.parentNode.removeChild(face.overlayElement);
         }
       }
+      trackedFaces.clear();
       return;
     }
 
@@ -491,7 +484,10 @@
 
     // Map incoming detections to screen coordinates and frame normalized coords
     const mappedDetections = incomingFaces.map((det, idx) => {
-      const [bx1, by1, bx2, by2] = det.bounding_box;
+      const box = Array.isArray(det.bounding_box) && det.bounding_box.length === 4
+        ? det.bounding_box
+        : (Array.isArray(det.raw_box) && det.raw_box.length === 4 ? det.raw_box : [0, 0, fw, fh]);
+      const [bx1, by1, bx2, by2] = box;
       const effX1 = mirrored ? (fw - bx2) : bx1;
       const effX2 = mirrored ? (fw - bx1) : bx2;
 
@@ -725,7 +721,7 @@
 
   // 60 FPS Optical Template Matching (Tracks head motion between network responses with 0ms lag)
   function runOpticalTemplateTracker(video) {
-    if (!video || video.paused || video.ended || video.readyState < 2 || trackedFaces.size === 0) return;
+    if (!video || video.paused || video.ended || video.readyState < 2 || trackedFaces.size === 0 || consecutiveNoFaceCount > 0) return;
     const now = performance.now();
     if (now - lastOpticalTrackTime < 16) return; // ~60 FPS
     lastOpticalTrackTime = now;
