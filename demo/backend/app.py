@@ -551,14 +551,51 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for local development and demo frontends
+# Enable CORS for local development, Cloudflare Pages, and demo frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "https://deepfake-shield.pages.dev",
+        "https://deepfake-meeting-shield.pages.dev",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "*",
+    ],
+    allow_origin_regex=r"https://.*\.pages\.dev",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_cors_headers_fallback(request: Request, call_next):
+    """Ensure CORS headers are always returned even on error responses or preflight."""
+    origin = request.headers.get("origin")
+    if request.method == "OPTIONS":
+        response = Response(status_code=204)
+    else:
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.error("Unhandled request exception: %s", exc, exc_info=True)
+            response = JSONResponse(
+                status_code=500,
+                content={"detail": f"Internal server error: {str(exc)}"}
+            )
+
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "*"
+    elif "Access-Control-Allow-Origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+
+    return response
 
 
 def validate_file_size(file: UploadFile, max_bytes: int = MAX_FILE_SIZE_BYTES) -> None:
@@ -750,107 +787,94 @@ def preprocess_video_frames(file_path: Path) -> Tuple[np.ndarray, int]:
     if not cap.isOpened():
         raise ValueError("Failed to open video file with OpenCV.")
 
-    sampled_frames_bgr: List[np.ndarray] = []
-    try:
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 0:
-            target_count = min(MAX_VIDEO_FRAMES, total_frames)
-            # Uniformly distribute frame samples across the entire video timeline
-            frame_indices = np.linspace(0, max(0, total_frames - 1), num=target_count, dtype=int)
-            for idx in frame_indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    h, w = frame.shape[:2]
-                    scale = min(1.0, MAX_VIDEO_FRAME_DIM / max(h, w))
-                    if scale < 1.0:
-                        frame = cv2.resize(
-                            frame,
-                            (int(w * scale), int(h * scale)),
-                            interpolation=cv2.INTER_AREA,
-                        )
-                    sampled_frames_bgr.append(frame)
-        else:
-            # Fallback for streams without total_frames metadata
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            step = max(1, int(round(fps))) if (fps and not np.isnan(fps) and fps > 0) else 30
-            frame_idx = 0
-            while len(sampled_frames_bgr) < MAX_VIDEO_FRAMES:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if frame_idx % step == 0:
-                    h, w = frame.shape[:2]
-                    scale = min(1.0, MAX_VIDEO_FRAME_DIM / max(h, w))
-                    if scale < 1.0:
-                        frame = cv2.resize(
-                            frame,
-                            (int(w * scale), int(h * scale)),
-                            interpolation=cv2.INTER_AREA,
-                        )
-                    sampled_frames_bgr.append(frame)
-                frame_idx += 1
-    finally:
-        cap.release()
-
-    if not sampled_frames_bgr:
-        raise ValueError("No video frames could be decoded from the provided file.")
-
     processed_faces: List[np.ndarray] = []
     imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
-    for frame_bgr in sampled_frames_bgr:
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        h, w, _ = frame_rgb.shape
-        face_crop: Optional[np.ndarray] = None
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            target_count = min(MAX_VIDEO_FRAMES, total_frames)
+            frame_indices = np.linspace(0, max(0, total_frames - 1), num=target_count, dtype=int)
+        else:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            step = max(1, int(round(fps))) if (fps and not np.isnan(fps) and fps > 0) else 30
+            frame_indices = [i * step for i in range(MAX_VIDEO_FRAMES)]
 
-        # Attempt face detection with MTCNN if available (scaled to max 320px for safety)
-        if models.mtcnn is not None:
-            try:
-                max_dim = max(h, w)
-                if max_dim > 320:
-                    scale = 320.0 / max_dim
-                    small_rgb = cv2.resize(frame_rgb, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-                    det_boxes, _ = models.mtcnn.detect(small_rgb)
-                    if det_boxes is not None and len(det_boxes) > 0:
-                        box = (det_boxes[0] / scale).astype(int)
-                        x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
-                        bw, bh = x2 - x1, y2 - y1
-                        crop_x1 = max(0, x1 - int(bw * 0.2))
-                        crop_y1 = max(0, y1 - int(bh * 0.2))
-                        crop_x2 = min(w, x2 + int(bw * 0.2))
-                        crop_y2 = min(h, y2 + int(bh * 0.2))
-                        if crop_x2 > crop_x1 and crop_y2 > crop_y1:
-                            face_crop = frame_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
-                else:
-                    detected_box, _ = models.mtcnn.detect(frame_rgb)
-                    if detected_box is not None and len(detected_box) > 0:
-                        box = detected_box[0].astype(int)
-                        x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
-                        bw, bh = x2 - x1, y2 - y1
-                        crop_x1 = max(0, x1 - int(bw * 0.2))
-                        crop_y1 = max(0, y1 - int(bh * 0.2))
-                        crop_x2 = min(w, x2 + int(bw * 0.2))
-                        crop_y2 = min(h, y2 + int(bh * 0.2))
-                        if crop_x2 > crop_x1 and crop_y2 > crop_y1:
-                            face_crop = frame_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
-            except Exception as exc:
-                logger.debug("MTCNN detection failed on frame: %s", exc)
+        cached_box = None
 
-        if face_crop is None or face_crop.size == 0:
-            continue
+        for frame_idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+            ret, frame_bgr = cap.read()
+            if not ret or frame_bgr is None:
+                continue
 
-        # Resize to 224x224
-        resized = cv2.resize(face_crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
-        # Normalize to [0, 1] then ImageNet mean/std
-        norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
-        # Transpose HWC -> CHW
-        transposed = np.transpose(norm_face, (2, 0, 1))
-        processed_faces.append(transposed)
+            h, w = frame_bgr.shape[:2]
+            scale = min(1.0, 480.0 / max(h, w))
+            if scale < 1.0:
+                frame_bgr = cv2.resize(
+                    frame_bgr,
+                    (int(w * scale), int(h * scale)),
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            cur_h, cur_w = frame_rgb.shape[:2]
+            del frame_bgr
+
+            face_crop = None
+
+            # 1. Use cached face bounding box if available and valid
+            if cached_box is not None:
+                cx1, cy1, cx2, cy2 = cached_box
+                if cx2 > cx1 and cy2 > cy1 and cy2 <= cur_h and cx2 <= cur_w:
+                    candidate = frame_rgb[cy1:cy2, cx1:cx2]
+                    if candidate.size > 0:
+                        face_crop = candidate
+
+            # 2. Run MTCNN detection if no cached box or if crop was invalid
+            if (face_crop is None or face_crop.size == 0) and models.mtcnn is not None:
+                try:
+                    with torch.inference_mode():
+                        det_dim = 320
+                        if max(cur_h, cur_w) > det_dim:
+                            d_scale = det_dim / float(max(cur_h, cur_w))
+                            small_rgb = cv2.resize(
+                                frame_rgb,
+                                (int(cur_w * d_scale), int(cur_h * d_scale)),
+                                interpolation=cv2.INTER_AREA,
+                            )
+                        else:
+                            d_scale = 1.0
+                            small_rgb = frame_rgb
+
+                        det_boxes, _ = models.mtcnn.detect(small_rgb)
+                        if det_boxes is not None and len(det_boxes) > 0:
+                            raw_box = (det_boxes[0] / d_scale).astype(int)
+                            bx1, by1, bx2, by2 = raw_box
+                            bw, bh = bx2 - bx1, by2 - by1
+                            cached_box = [
+                                max(0, bx1 - int(bw * 0.15)),
+                                max(0, by1 - int(bh * 0.15)),
+                                min(cur_w, bx2 + int(bw * 0.15)),
+                                min(cur_h, by2 + int(bh * 0.15)),
+                            ]
+                            face_crop = frame_rgb[cached_box[1]:cached_box[3], cached_box[0]:cached_box[2]]
+                except Exception as exc:
+                    logger.debug("MTCNN video detection failed on frame: %s", exc)
+
+            if face_crop is not None and face_crop.size > 0:
+                resized = cv2.resize(face_crop, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+                norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
+                transposed = np.transpose(norm_face, (2, 0, 1))
+                processed_faces.append(transposed)
+
+            del frame_rgb
+    finally:
+        cap.release()
 
     if not processed_faces:
-        raise ValueError("No face was detected in the sampled video frames.")
+        raise ValueError("No human face was detected in the sampled video frames.")
 
     batch_array = np.stack(processed_faces, axis=0).astype(np.float32)
     return batch_array, len(processed_faces)

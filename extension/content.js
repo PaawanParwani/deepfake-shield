@@ -123,65 +123,6 @@
     }
   }
 
-  // Extract participant name directly from Google Meet container DOM
-  function getParticipantName(video) {
-    try {
-      let container = video.closest('[data-participant-id], [data-tile-id], .a37T0e, .d2h49b, [role="listitem"]');
-      if (!container) {
-        let p = video.parentElement;
-        while (p && p !== document.body && p.children.length < 5) {
-          p = p.parentElement;
-        }
-        container = p || video.parentElement;
-      }
-
-      if (container) {
-        // Priority 1: dedicated Google Meet participant name elements
-        const nameEl = container.querySelector('.zWGUib, [data-self-name]');
-        if (nameEl) {
-          const val = (nameEl.getAttribute("data-self-name") || nameEl.textContent || "").trim();
-          const clean = val.replace(/\s*\(You\)$/i, "").trim();
-          if (clean && clean.toLowerCase() !== "you" && clean.length >= 2) return clean;
-        }
-
-        // Priority 2: other text labels (strictly skipping buttons & toolbars)
-        const candidates = container.querySelectorAll(
-          '.zWGUib, [data-self-name], [data-hovercard-id], span.notranslate, .p2hjIb, .XE8e1e'
-        );
-        for (const el of candidates) {
-          if (el.closest('button, [role="button"], [role="toolbar"], .VfPpkd-Bz112c-LgbsSe')) continue;
-          const text = (el.getAttribute("data-self-name") || el.textContent || "").trim();
-          if (
-            text &&
-            text.length >= 2 &&
-            text.length < 40 &&
-            !text.includes(":") &&
-            !text.includes("%") &&
-            !text.includes("Target") &&
-            !text.toLowerCase().includes("reframe") &&
-            !text.toLowerCase().includes("visual effect") &&
-            !text.toLowerCase().includes("turn off") &&
-            !text.toLowerCase().includes("turn on") &&
-            !text.toLowerCase().includes("microphone") &&
-            !text.toLowerCase().includes("camera") &&
-            !text.toLowerCase().includes("pin") &&
-            !text.toLowerCase().includes("options")
-          ) {
-            const clean = text.replace(/\s*\(You\)$/i, "").trim();
-            if (clean && clean.toLowerCase() !== "you") return clean;
-          }
-        }
-      }
-
-      const selfEl = document.querySelector('[data-self-name], .zWGUib');
-      if (selfEl) {
-        const name = (selfEl.getAttribute("data-self-name") || selfEl.textContent || "").trim().replace(/\s*\(You\)$/i, "").trim();
-        if (name && name.length >= 2 && name.toLowerCase() !== "you" && !name.toLowerCase().includes("reframe")) return name;
-      }
-    } catch {}
-    return "Verified Human";
-  }
-
   // Robust Mirroring Detection (Inspects entire ancestor DOM chain up to body)
   function isVideoMirrored(video) {
     let el = video;
@@ -439,8 +380,6 @@
     const fh = data.frame_height || capturedH || 360;
     const mirrored = isVideoMirrored(video);
     const geom = getRenderedVideoGeometry(video, fw, fh);
-    const participantName = getParticipantName(video);
-
     debugLog(`Video Element: ${Math.round(geom.width)}x${Math.round(geom.height)} | Stream: ${fw}x${fh} | Mirrored: ${mirrored}`);
 
     // ZERO FACES DETECTED: Instant Zero-Ghost Purge
@@ -578,8 +517,7 @@
 
         bestMatch = {
           id: newId,
-          label: `Target #${mDet.targetIndex}`,
-          userName: participantName,
+          label: `Face #${mDet.targetIndex}`,
           current: { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH },
           target: { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH },
           history: [],
@@ -601,9 +539,8 @@
 
       matchedTrackIds.add(bestMatch.id);
       bestMatch.lastSeen = now;
-      bestMatch.userName = participantName;
       bestMatch.emotion = mDet.det.emotion || "Focused / Calm 👤";
-      bestMatch.label = `Target #${mDet.targetIndex}`;
+      bestMatch.label = `Face #${mDet.targetIndex}`;
       bestMatch.target = { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH };
       bestMatch.sharpness = mDet.det.sharpness || 100;
       bestMatch.templateNormPos = { cx: mDet.normCx, cy: mDet.normCy };
@@ -655,10 +592,7 @@
     const totalFaces = activeList.length;
     const suspiciousFaces = activeList.filter((f) => f.verdict === "suspicious");
     const uncertainFaces = activeList.filter((f) => f.verdict === "uncertain");
-    let displayName = participantName && participantName !== "Verified Participant" && participantName !== "Verified Human" ? participantName.toUpperCase() : "VERIFIED HUMAN";
-    if (displayName.includes("REFRAME") || displayName === "YOU") {
-      displayName = "VERIFIED HUMAN";
-    }
+    const displayName = "PARTICIPANT";
 
     const primaryEmotion = (activeList.length > 0 && activeList[0].emotion) || emotion || "Focused / Calm 👤";
 
@@ -821,8 +755,7 @@
           el.style.height = `${Math.round(face.current.h)}px`;
           el.style.opacity = face.opacity.toFixed(2);
 
-          const isPrimary = face.label.includes("#1") || trackedFaces.size === 1;
-          const nameDisplay = isPrimary ? (face.userName || "Verified Human") : face.label;
+          const nameDisplay = face.label || "Face";
           const emotionDisplay = face.emotion || "Focused / Calm 👤";
 
           if (face.verdict === "suspicious") {
