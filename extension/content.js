@@ -355,12 +355,17 @@
 
     inFlight = true;
     const reqStart = performance.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
     try {
       const resp = await fetch(`${config.backendUrl}/predict/frame`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image_base64: capture.dataUrl })
+        body: JSON.stringify({ image_base64: capture.dataUrl }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (resp.ok) {
         const data = await resp.json();
@@ -370,6 +375,7 @@
         debugLog(`Server responded with HTTP ${resp.status}`);
       }
     } catch (err) {
+      clearTimeout(timeoutId);
       debugLog("Inference fetch error:", err);
       renderOffline();
     } finally {
