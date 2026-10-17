@@ -10,12 +10,12 @@ from __future__ import annotations
 import argparse
 import logging
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, Wav2Vec2Config, Wav2Vec2Model
+from transformers import Wav2Vec2Config, Wav2Vec2Model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ class Wav2Vec2AudioClassifier(nn.Module):
         num_classes: int = 2,
         freeze_backbone: bool = True,
         dropout: float = 0.1,
+        backbone_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize the Wav2Vec2 classifier.
 
@@ -55,21 +56,24 @@ class Wav2Vec2AudioClassifier(nn.Module):
             num_classes: Number of target classes (2: bonafide vs spoof).
             freeze_backbone: Whether to freeze backbone weights during initialization.
             dropout: Dropout probability applied before linear classification head.
+            backbone_config: Serialized Wav2Vec2 config for offline checkpoint loading.
         """
         super().__init__()
         self.model_name = model_name
         self.num_classes = num_classes
 
-        # Load pretrained backbone, falling back to initialized config if offline
-        try:
-            self.backbone = Wav2Vec2Model.from_pretrained(model_name)
-            logger.info(f"Loaded pretrained backbone weights from {model_name}")
-        except Exception as e:
-            logger.warning(
-                f"Failed to download/load pretrained weights ({e}). Initializing backbone with config."
-            )
-            config = Wav2Vec2Config.from_pretrained(model_name) if hasattr(Wav2Vec2Config, "from_pretrained") else Wav2Vec2Config()
-            self.backbone = Wav2Vec2Model(config)
+        if backbone_config is not None:
+            self.backbone = Wav2Vec2Model(Wav2Vec2Config.from_dict(backbone_config))
+            logger.info("Initialized Wav2Vec2 backbone from the supplied checkpoint config.")
+        else:
+            try:
+                self.backbone = Wav2Vec2Model.from_pretrained(model_name)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not load pretrained Wav2Vec2 weights for '{model_name}'. "
+                    "Training from a random backbone is disabled."
+                ) from exc
+            logger.info("Loaded pretrained backbone weights from %s", model_name)
 
         self.hidden_size: int = self.backbone.config.hidden_size
         self.classifier = nn.Sequential(
@@ -193,6 +197,7 @@ def build_model(
     freeze_backbone: bool = True,
     dropout: float = 0.1,
     device: Optional[torch.device] = None,
+    backbone_config: Optional[Dict[str, Any]] = None,
 ) -> nn.Module:
     """Factory function to build and initialize the audio classifier.
 
@@ -214,6 +219,7 @@ def build_model(
             num_classes=num_classes,
             freeze_backbone=freeze_backbone,
             dropout=dropout,
+            backbone_config=backbone_config,
         )
     if device is not None:
         model.to(device)

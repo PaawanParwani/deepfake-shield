@@ -11,8 +11,9 @@ import argparse
 import io
 import json
 import logging
+import random
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -31,6 +32,7 @@ def set_seed(seed: int = 42) -> None:
     Args:
         seed: Random seed integer.
     """
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -125,7 +127,8 @@ class FFppFaceDataset(Dataset):
         smoke_test: bool = False,
         smoke_test_videos: int = 50,
         transform: Optional[Callable[[Image.Image], torch.Tensor]] = None,
-        create_synthetic_if_empty: bool = True,
+        required_manipulation_methods: Optional[Sequence[str]] = None,
+        minimum_split_coverage: float = 0.95,
     ) -> None:
         """Initialize FF++ face dataset.
 
@@ -137,7 +140,8 @@ class FFppFaceDataset(Dataset):
             smoke_test: Whether to restrict dataset to a small subset for fast verification.
             smoke_test_videos: Max number of videos in smoke test mode.
             transform: Optional custom transform override.
-            create_synthetic_if_empty: If true and no crops exist, generate synthetic crops for smoke testing.
+            required_manipulation_methods: Fake-video methods required for each official split.
+            minimum_split_coverage: Minimum fraction of official videos required in each split.
         """
         self.crops_dir = Path(crops_dir)
         self.split = split
@@ -145,31 +149,37 @@ class FFppFaceDataset(Dataset):
         self.image_size = image_size
         self.smoke_test = smoke_test
         self.smoke_test_videos = smoke_test_videos
+        self.required_manipulation_methods = tuple(required_manipulation_methods or ())
+        if not 0.0 < minimum_split_coverage <= 1.0:
+            raise ValueError("minimum_split_coverage must be in the interval (0, 1].")
+        self.minimum_split_coverage = minimum_split_coverage
         self.transform = transform or get_transforms(split=split, image_size=image_size)
 
         self.samples: List[Tuple[Path, int, str, str]] = []  # (path, label, video_id, method)
         self._load_samples()
 
-        if len(self.samples) == 0 and create_synthetic_if_empty:
-            logger.warning(
-                "No crops found in %s for split %s. Creating synthetic crops for smoke testing.",
-                self.crops_dir,
-                self.split,
+        if not self.samples:
+            raise FileNotFoundError(
+                f"No extracted FaceForensics++ crops found for split '{self.split}' "
+                f"under {self.crops_dir}. Extract the official split before training or evaluation."
             )
-            self._create_synthetic_dataset()
-            self._load_samples()
 
-    def _get_allowed_video_ids(self) -> Optional[Dict[str, List[str]]]:
-        """Parse official FF++ split JSON file if available.
+    def _get_allowed_video_ids(self) -> Dict[str, Any]:
+        """Parse the required official FF++ split JSON file.
 
         Returns:
-            Dictionary with 'real' video IDs and 'pair' IDs, or None if file is missing.
+            Dictionary with real video IDs and manipulated video pairs.
         """
         if not self.splits_dir:
-            return None
+            raise FileNotFoundError(
+                f"Official split directory is required for split-safe loading of '{self.split}'."
+            )
         split_file = self.splits_dir / f"{self.split}.json"
         if not split_file.is_file():
-            return None
+            raise FileNotFoundError(
+                f"Official split file not found: {split_file}. "
+                "Create or restore the FaceForensics++ official split files before loading data."
+            )
 
         with open(split_file, "r", encoding="utf-8") as f:
             pairs = json.load(f)
@@ -222,18 +232,17 @@ class FFppFaceDataset(Dataset):
                     if len(parts) >= 2:
                         method = parts[0]
 
-                if allowed is not None and base_dir == self.crops_dir:
-                    if label_int == 0:
-                        if video_id not in allowed["real"]:
-                            continue
-                    else:
-                        match = False
-                        for id1, id2 in allowed["pairs"]:
-                            if f"{id1}_{id2}" in video_id or f"{id2}_{id1}" in video_id:
-                                match = True
-                                break
-                        if not match:
-                            continue
+                if label_int == 0:
+                    if video_id not in allowed["real"]:
+                        continue
+                else:
+                    match = False
+                    for id1, id2 in allowed["pairs"]:
+                        if f"{id1}_{id2}" in video_id or f"{id2}_{id1}" in video_id:
+                            match = True
+                            break
+                    if not match:
+                        continue
 
                 frames = sorted(
                     list(video_folder.glob("*.jpg"))
@@ -250,8 +259,73 @@ class FFppFaceDataset(Dataset):
                     videos_by_id[video_id].append((frame_path, label_int, video_id, method))
 
         selected_video_ids = list(videos_by_id.keys())
+        if not self.smoke_test:
+            real_video_ids = {
+                video_id
+                for video_id, samples in videos_by_id.items()
+                if samples and samples[0][1] == 0
+            }
+            expected_real_ids = set(allowed["real"])
+            real_coverage = len(real_video_ids & expected_real_ids) / max(len(expected_real_ids), 1)
+            missing_method_coverage = {}
+            for method in self.required_manipulation_methods:
+                covered_pairs = sum(
+                    1
+                    for id1, id2 in allowed["pairs"]
+                    if f"{method}_{id1}_{id2}" in videos_by_id
+                    or f"{method}_{id2}_{id1}" in videos_by_id
+                )
+                method_coverage = covered_pairs / max(len(allowed["pairs"]), 1)
+                if method_coverage < self.minimum_split_coverage:
+                    missing_method_coverage[method] = method_coverage
+
+            if (
+                real_coverage < self.minimum_split_coverage
+                or missing_method_coverage
+            ):
+                method_details = ", ".join(
+                    f"{method}={coverage:.1%}"
+                    for method, coverage in sorted(missing_method_coverage.items())
+                )
+                raise ValueError(
+                    f"Incomplete official '{self.split}' crops: real coverage "
+                    f"{real_coverage:.1%} ({len(real_video_ids & expected_real_ids)}/"
+                    f"{len(expected_real_ids)}), missing manipulation coverage "
+                    f"{method_details or 'none'}. Extract the full official split before "
+                    "training or evaluation."
+                )
+
         if self.smoke_test and len(selected_video_ids) > self.smoke_test_videos:
-            selected_video_ids = selected_video_ids[: self.smoke_test_videos]
+            rng = random.Random(42)
+            real_ids = sorted(
+                video_id
+                for video_id in selected_video_ids
+                if videos_by_id[video_id][0][1] == 0
+            )
+            fake_ids = [
+                video_id
+                for video_id in selected_video_ids
+                if videos_by_id[video_id][0][1] == 1
+            ]
+            real_limit = (self.smoke_test_videos + 1) // 2
+            fake_limit = self.smoke_test_videos // 2
+            selected_video_ids = rng.sample(real_ids, min(real_limit, len(real_ids)))
+
+            methods = self.required_manipulation_methods or tuple(
+                sorted({videos_by_id[video_id][0][3] for video_id in fake_ids})
+            )
+            for method in methods:
+                method_ids = [video_id for video_id in fake_ids if video_id.startswith(f"{method}_")]
+                if method_ids and len(selected_video_ids) < real_limit + fake_limit:
+                    chosen = rng.choice(method_ids)
+                    selected_video_ids.append(chosen)
+                    fake_ids.remove(chosen)
+
+            remaining_fake = max(0, fake_limit - (len(selected_video_ids) - min(real_limit, len(real_ids))))
+            if remaining_fake and fake_ids:
+                selected_video_ids.extend(
+                    rng.sample(fake_ids, min(remaining_fake, len(fake_ids)))
+                )
 
         for vid in selected_video_ids:
             self.samples.extend(videos_by_id[vid])
@@ -262,32 +336,6 @@ class FFppFaceDataset(Dataset):
             len(self.samples),
             len(selected_video_ids),
         )
-
-    def _create_synthetic_dataset(self) -> None:
-        """Create minimal synthetic face crop images for end-to-end execution without FF++ files."""
-        set_seed(42)
-        target_root = self.crops_dir / self.split
-        methods = ["Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures"]
-
-        # Create 4 real and 4 fake synthetic videos with 4 frames each
-        for i in range(4):
-            vid = f"synthetic_real_{i:03d}"
-            v_dir = target_root / "real" / vid
-            v_dir.mkdir(parents=True, exist_ok=True)
-            for f_idx in range(4):
-                arr = np.random.randint(100, 240, (self.image_size, self.image_size, 3), dtype=np.uint8)
-                img = Image.fromarray(arr)
-                img.save(v_dir / f"frame_{f_idx:04d}.jpg")
-
-        for i in range(4):
-            method = methods[i % len(methods)]
-            vid = f"{method}_{i:03d}_{i+1:03d}"
-            v_dir = target_root / "fake" / vid
-            v_dir.mkdir(parents=True, exist_ok=True)
-            for f_idx in range(4):
-                arr = np.random.randint(20, 160, (self.image_size, self.image_size, 3), dtype=np.uint8)
-                img = Image.fromarray(arr)
-                img.save(v_dir / f"frame_{f_idx:04d}.jpg")
 
     def __len__(self) -> int:
         """Return total number of frame samples in the dataset."""
@@ -342,6 +390,8 @@ def create_dataloader(
         image_size=int(config.get("image_size", 224)),
         smoke_test=bool(config.get("smoke_test", False)),
         smoke_test_videos=int(config.get("smoke_test_videos", 50)),
+        required_manipulation_methods=config.get("manipulation_methods", []),
+        minimum_split_coverage=float(config.get("minimum_split_coverage", 0.95)),
     )
 
     loader = DataLoader(

@@ -6,6 +6,7 @@ timm
 librosa
 soundfile
 opencv-python
+pillow
 facenet-pytorch
 scikit-learn
 torchattacks
@@ -17,6 +18,7 @@ uvicorn
 python-multipart
 numpy
 pandas
+pyarrow
 matplotlib
 pyyaml
 tqdm

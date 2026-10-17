@@ -1,6 +1,6 @@
 """Evaluation script for Audio Deepfake Detector.
 
-Loads a trained Wav2Vec2 checkpoint, evaluates performance on the dev or eval split
+Loads a trained audio checkpoint, evaluates performance on the dev or eval split
 of ASVspoof 2019 LA, calculates Equal Error Rate (EER) via ROC interpolation,
 AUC, and classification accuracy, generates ROC and DET plots, and outputs
 metrics to outputs/metrics.json.
@@ -11,21 +11,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import random
 import sys
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import interp1d
-from scipy.optimize import brentq
-import scipy.stats as stats
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 import torch
-import torch.nn as nn
 import yaml
 
 # Relative imports or package imports
@@ -34,10 +29,10 @@ if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 try:
-    from .dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset
+    from .dataset import ASVSpoof2019LADataset, create_dataloader, detect_data_format
     from .model import build_model
 except ImportError:
-    from dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset
+    from dataset import ASVSpoof2019LADataset, create_dataloader, detect_data_format
     from model import build_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -174,7 +169,7 @@ def evaluate_model(
     """Execute evaluation on a specified dataset split.
 
     Args:
-        checkpoint_path: Path to checkpoint .pt file, or None for newly initialized model.
+        checkpoint_path: Trained checkpoint file, or None to use output_dir/best_model.pt.
         config: Configuration dictionary.
         split: Split name ('dev' or 'eval').
         device_name: Device selection ('auto', 'cuda', 'cpu').
@@ -190,21 +185,40 @@ def evaluate_model(
         device = torch.device(device_name)
     logger.info(f"Evaluating on device: {device}")
 
-    # Build model
+    if checkpoint_path is None:
+        checkpoint_path = Path(config.get("output_dir", "audio/outputs")) / "best_model.pt"
+    checkpoint_file = Path(checkpoint_path)
+    if not checkpoint_file.is_file():
+        raise FileNotFoundError(f"Trained audio checkpoint not found: {checkpoint_file}")
+
+    logger.info("Loading checkpoint weights from: %s", checkpoint_file)
+    checkpoint = torch.load(str(checkpoint_file), map_location=device)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    if not isinstance(state_dict, dict):
+        raise ValueError("Audio checkpoint does not contain a state dictionary.")
+
+    declared_type = str(checkpoint.get("model_type", "")).lower()
+    if "rnn" in declared_type or any(key.startswith("rnn.") for key in state_dict):
+        model_name = "rnn"
+        backbone_config = None
+    elif any(key.startswith("backbone.encoder.") for key in state_dict):
+        model_name = str(config.get("model_name", "facebook/wav2vec2-base"))
+        backbone_config = checkpoint.get("model_config")
+        if not isinstance(backbone_config, dict):
+            raise ValueError("Wav2Vec2 checkpoint is missing its serialized backbone config.")
+    else:
+        raise ValueError(
+            "Unsupported audio checkpoint architecture; refusing to evaluate untrained weights."
+        )
+
     model = build_model(
-        model_name=config.get("model_name", "facebook/wav2vec2-base"),
+        model_name=model_name,
         num_classes=config.get("num_classes", 2),
         freeze_backbone=False,
         device=device,
+        backbone_config=backbone_config,
     )
-
-    if checkpoint_path is not None and Path(checkpoint_path).exists():
-        logger.info(f"Loading checkpoint weights from: {checkpoint_path}")
-        checkpoint = torch.load(str(checkpoint_path), map_location=device)
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        model.load_state_dict(state_dict)
-    else:
-        logger.warning("No checkpoint file provided or found. Evaluating with baseline initialized weights.")
+    model.load_state_dict(state_dict, strict=True)
 
     model.eval()
 
@@ -213,19 +227,15 @@ def evaluate_model(
     smoke_test = config.get("smoke_test", False)
     smoke_test_size = config.get("smoke_test_size", 500)
 
-    from audio.src.dataset import detect_data_format
-    temp_dir_obj = None
     data_format = detect_data_format(data_dir)
 
     if data_format == "parquet":
         logger.info("Using parquet format (HuggingFace download). Protocol files not needed.")
     elif not protocol_dir.exists():
-        logger.warning("Protocol directory not found. Generating synthetic data for evaluation smoke test.")
-        temp_dir_obj = tempfile.TemporaryDirectory()
-        data_dir, protocol_dir = create_synthetic_dataset(
-            Path(temp_dir_obj.name), num_samples=min(smoke_test_size, 30)
+        raise FileNotFoundError(
+            f"ASVspoof protocol directory not found: {protocol_dir}. "
+            "Download the official evaluation protocol before evaluating."
         )
-        smoke_test = True
 
     dataset = ASVSpoof2019LADataset(
         data_dir=data_dir,
@@ -238,6 +248,8 @@ def evaluate_model(
         smoke_test_size=smoke_test_size,
         return_file_id=True,
     )
+    if not len(dataset):
+        raise ValueError(f"Evaluation split '{split}' contains no samples.")
 
     dataloader = create_dataloader(
         dataset,
@@ -280,7 +292,7 @@ def evaluate_model(
     except Exception:
         auc = 0.5
 
-    eer, thresh, fpr, tpr, thresholds = compute_eer(labels_arr, scores_arr)
+    eer, thresh, fpr, tpr, _ = compute_eer(labels_arr, scores_arr)
 
     # Class-wise accuracies
     acc_bonafide = (
@@ -321,9 +333,6 @@ def evaluate_model(
 
     # Print results table
     print_results_table(metrics)
-
-    if temp_dir_obj is not None:
-        temp_dir_obj.cleanup()
 
     return metrics
 

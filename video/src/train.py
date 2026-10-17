@@ -10,14 +10,20 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
+from tqdm.auto import tqdm
 import yaml
+
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 try:
     import wandb
@@ -116,13 +122,13 @@ def train_one_epoch(
 
     use_amp = (device.type == "cuda")
 
-    for batch in dataloader:
+    for batch in tqdm(dataloader, desc=f"Train epoch {epoch}", unit="batch"):
         images = batch[0].to(device)
         labels = batch[1].to(device)
 
         optimizer.zero_grad()
 
-        with autocast(enabled=use_amp):
+        with autocast("cuda", enabled=use_amp):
             logits = model(images)
             loss = criterion(logits, labels)
 
@@ -174,12 +180,12 @@ def evaluate(
     use_amp = (device.type == "cuda")
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Validation", unit="batch"):
             images = batch[0].to(device)
             labels = batch[1].to(device)
             video_ids = batch[2]
 
-            with autocast(enabled=use_amp):
+            with autocast("cuda", enabled=use_amp):
                 logits = model(images)
                 loss = criterion(logits, labels)
 
@@ -257,6 +263,24 @@ def train_model(
     val_dataset, val_loader = create_dataloader(config, split="val", shuffle=False)
 
     logger.info("Train samples: %d, Val samples: %d", len(train_dataset), len(val_dataset))
+    for split_name, dataset in (("train", train_dataset), ("val", val_dataset)):
+        labels = {sample[1] for sample in dataset.samples}
+        if labels != {0, 1}:
+            raise ValueError(
+                f"The {split_name} split must contain real and fake videos; "
+                f"found labels {sorted(labels)}."
+            )
+
+    expected_methods = set(config.get("manipulation_methods", []))
+    train_methods = {
+        sample[3] for sample in train_dataset.samples if sample[1] == 1
+    }
+    missing_methods = expected_methods - train_methods
+    if missing_methods:
+        raise ValueError(
+            "Training crops are missing configured manipulation methods: "
+            f"{', '.join(sorted(missing_methods))}. Re-extract the official train split."
+        )
 
     # Model, optimizer, scheduler, criterion
     model = build_model(config, device=device)
@@ -271,7 +295,7 @@ def train_model(
         eta_min=1e-6,
     )
     criterion = nn.CrossEntropyLoss()
-    scaler = GradScaler(enabled=(device.type == "cuda"))
+    scaler = GradScaler("cuda", enabled=(device.type == "cuda"))
 
     # Outputs
     output_dir = Path(config.get("output_dir", "video/outputs"))

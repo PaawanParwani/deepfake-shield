@@ -8,6 +8,7 @@ manipulation_methods:
   - Face2Face
   - FaceSwap
   - NeuralTextures
+minimum_split_coverage: 0.95
 compression: c23
 frames_per_video: 16
 image_size: 224

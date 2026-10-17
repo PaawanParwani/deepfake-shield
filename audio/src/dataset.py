@@ -14,11 +14,10 @@ from __future__ import annotations
 import argparse
 import io
 import logging
-import os
 import random
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import soundfile as sf
@@ -189,11 +188,27 @@ class ASVSpoof2019LADataset(Dataset):
         self.parquet_data = pd.concat(dfs, ignore_index=True)
 
         if self.smoke_test:
-            # Shuffle before sampling to ensure both classes are represented
-            self.parquet_data = self.parquet_data.sample(
-                n=min(self.smoke_test_size, len(self.parquet_data)),
-                random_state=42,
-            ).reset_index(drop=True)
+            sample_size = min(self.smoke_test_size, len(self.parquet_data))
+            class_groups = list(self.parquet_data.groupby("key", sort=True))
+            quota, remainder = divmod(sample_size, max(len(class_groups), 1))
+            sampled_groups = []
+            for group_index, (_, group) in enumerate(class_groups):
+                group_size = min(len(group), quota + int(group_index < remainder))
+                if group_size:
+                    sampled_groups.append(
+                        group.sample(n=group_size, random_state=42 + group_index)
+                    )
+            sampled_data = pd.concat(sampled_groups) if sampled_groups else self.parquet_data.iloc[:0]
+            remaining = sample_size - len(sampled_data)
+            if remaining:
+                remaining_data = self.parquet_data.drop(index=sampled_data.index)
+                sampled_data = pd.concat(
+                    [
+                        sampled_data,
+                        remaining_data.sample(n=remaining, random_state=42),
+                    ]
+                )
+            self.parquet_data = sampled_data.sample(frac=1, random_state=42).reset_index(drop=True)
             logger.info(f"Smoke test: limited to {len(self.parquet_data)} samples")
 
     def _load_audio_from_parquet(self, idx: int) -> Tuple[torch.Tensor, int, str]:
@@ -303,8 +318,9 @@ class ASVSpoof2019LADataset(Dataset):
                 break
 
         if file_path is None:
-            logger.warning(f"Audio file {audio_id} not found in {self.audio_dir}. Using silence.")
-            return torch.zeros(self.target_length, dtype=torch.float32)
+            raise FileNotFoundError(
+                f"Audio file {audio_id} was not found in {self.audio_dir}."
+            )
 
         try:
             waveform, sr = torchaudio.load(str(file_path))

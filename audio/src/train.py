@@ -12,10 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import random
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -23,8 +21,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from scipy.interpolate import interp1d
-from scipy.optimize import brentq
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
+from tqdm.auto import tqdm
 import yaml
 
 # Relative imports or package imports
@@ -33,11 +31,11 @@ if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 try:
-    from .dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset
-    from .model import build_model
+    from .dataset import ASVSpoof2019LADataset, create_dataloader, detect_data_format
+    from .model import Wav2Vec2AudioClassifier, build_model
 except ImportError:
-    from dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset
-    from model import build_model
+    from dataset import ASVSpoof2019LADataset, create_dataloader, detect_data_format
+    from model import Wav2Vec2AudioClassifier, build_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -226,24 +224,16 @@ def train_pipeline(
     smoke_test = config.get("smoke_test", False)
     smoke_test_size = config.get("smoke_test_size", 500)
 
-    # Auto-detect data format and handle missing data gracefully
-    from audio.src.dataset import detect_data_format
-    temp_dir_obj = None
+    # Require the configured dataset instead of producing success-shaped synthetic metrics.
     data_format = detect_data_format(data_dir)
 
     if data_format == "parquet":
         logger.info("Using parquet format (HuggingFace download). Protocol files not needed.")
     elif not protocol_dir.exists():
-        logger.warning(
-            f"Protocol directory {protocol_dir} not found. "
-            "Generating temporary synthetic dataset for end-to-end execution."
+        raise FileNotFoundError(
+            f"ASVspoof protocol directory not found: {protocol_dir}. "
+            "Download the official train/dev/eval protocols before training."
         )
-        temp_dir_obj = tempfile.TemporaryDirectory()
-        temp_root = Path(temp_dir_obj.name)
-        data_dir, protocol_dir = create_synthetic_dataset(
-            temp_root, num_samples=min(smoke_test_size, 40)
-        )
-        smoke_test = True
 
     sample_rate = config.get("sample_rate", 16000)
     max_duration = config.get("max_duration", 4.0)
@@ -274,6 +264,12 @@ def train_pipeline(
         smoke_test_size=smoke_test_size,
     )
 
+    if not len(train_dataset) or not len(dev_dataset):
+        raise ValueError(
+            f"Training requires non-empty train and dev splits; "
+            f"found train={len(train_dataset)}, dev={len(dev_dataset)}."
+        )
+
     train_loader = create_dataloader(
         train_dataset,
         batch_size=batch_size,
@@ -293,12 +289,14 @@ def train_pipeline(
     spoof_count = train_dataset._count_label(1)
     total_count = len(train_dataset)
 
-    if bonafide_count > 0 and spoof_count > 0:
-        w0 = total_count / (2.0 * bonafide_count)
-        w1 = total_count / (2.0 * spoof_count)
-        class_weights = torch.tensor([w0, w1], dtype=torch.float32, device=device)
-    else:
-        class_weights = torch.tensor([1.0, 1.0], dtype=torch.float32, device=device)
+    if bonafide_count == 0 or spoof_count == 0:
+        raise ValueError(
+            f"Training requires both bonafide and spoof samples; "
+            f"found bonafide={bonafide_count}, spoof={spoof_count}."
+        )
+    w0 = total_count / (2.0 * bonafide_count)
+    w1 = total_count / (2.0 * spoof_count)
+    class_weights = torch.tensor([w0, w1], dtype=torch.float32, device=device)
 
     logger.info(
         f"Class balance: bonafide={bonafide_count}, spoof={spoof_count}. "
@@ -327,7 +325,7 @@ def train_pipeline(
 
     # Mixed precision scaler (enabled on CUDA)
     use_amp = device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     best_eer = float("inf")
     best_metrics: Dict[str, Any] = {}
@@ -340,13 +338,17 @@ def train_pipeline(
         running_loss = 0.0
         train_samples = 0
 
-        for batch_idx, (waveforms, labels) in enumerate(train_loader):
+        for waveforms, labels in tqdm(
+            train_loader,
+            desc=f"Train {epoch}/{epochs}",
+            unit="batch",
+        ):
             waveforms = waveforms.to(device)
             labels = labels.to(device)
 
             optimizer.zero_grad()
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 logits = model(waveforms)
                 loss = criterion(logits, labels)
 
@@ -399,6 +401,12 @@ def train_pipeline(
                 {
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
+                    "model_type": "wav2vec2" if isinstance(model, Wav2Vec2AudioClassifier) else type(model).__name__,
+                    "model_config": (
+                        model.backbone.config.to_dict()
+                        if isinstance(model, Wav2Vec2AudioClassifier)
+                        else None
+                    ),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "eer": best_eer,
                     "metrics": dev_metrics,
@@ -418,9 +426,6 @@ def train_pipeline(
         import wandb
 
         wandb.finish()
-
-    if temp_dir_obj is not None:
-        temp_dir_obj.cleanup()
 
     return best_metrics
 

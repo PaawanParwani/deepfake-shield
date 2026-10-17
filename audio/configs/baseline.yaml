@@ -13,7 +13,7 @@ max_duration: 4.0  # seconds (4.0 * 16000 = 64000 samples)
 
 # Model architecture
 model_name: "facebook/wav2vec2-base"
-freeze_backbone: true  # Start frozen for fast initial training
+freeze_backbone: false  # Fine-tune the pretrained backbone
 num_classes: 2         # 0: bonafide, 1: spoof
 
 # Training hyperparameters
@@ -26,7 +26,7 @@ seed: 42
 
 # Experiment tracking & runtime
 wandb_project: "human-verification-audio"
-smoke_test: true
+smoke_test: false
 smoke_test_size: 500
 num_workers: 2
 device: "auto"         # 'auto', 'cuda', or 'cpu'

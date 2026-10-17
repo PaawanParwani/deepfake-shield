@@ -11,7 +11,7 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 
 ## Audio track (A)
 - [x] Download ASVspoof2019 LA + protocol files
-- [x] `audio/src/dataset.py` with multi-format support (Parquet + FLAC)
+- [x] `audio/src/dataset.py` with Parquet + FLAC support; missing protocol-listed FLAC files fail explicitly rather than becoming silence
 - [x] `audio/src/model.py` wav2vec2 + head
 - [x] `audio/src/train.py` trains/evaluates configured train/dev splits with class-weighted loss and mixed precision
 - [~] Full ASVspoof2019 LA wav2vec2 fine-tuning and official eval split: full Colab run on the uploaded parquet train/dev splits was started; no completed metrics or official eval result received yet. The repository checkpoint remains identified as CRNN/BiGRU
@@ -37,7 +37,7 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] `/health` reports the loaded audio architecture dynamically instead of always claiming CRNN-BiGRU
 - [x] `demo/frontend/index.html` glassmorphic UI, audio/video upload, live scoring
 - [x] Cloudflare Pages frontend deployed from `main` and verified at `https://deepfake-shield.pages.dev` (HTTP 200; updated copy served)
-- [x] Backend fixes deployed to Render from `main` (`7f2ecbe`); `/health` returns HTTP 200, reports the loaded CRNN-BiGRU and video models, and CORS preflight from the Pages origin passes. This deployment still uses the existing CRNN audio checkpoint; the full wav2vec2 training result is pending
+- [x] Backend fixes deployed to Render from `main` (`aad14ab`); `/health` and `/` return HTTP 200, the loaded CRNN-BiGRU and video models are ready, and CORS preflight from the Pages origin passes. This deployment still uses the existing CRNN audio checkpoint; the full wav2vec2 training result is pending
 - [x] Chrome extension prototype (`extension/` Manifest V3, anonymous face labels and live status HUD; live meeting integration remains outside locked project scope)
 - [x] Combine verdicts (either modality > 0.5 => Suspicious) + Calibrated Bayesian Reliability Gating
 - [x] Script 60-90 s demo video for YC / academic presentation (`docs/15_DEMO_VIDEO_SCRIPT.md`)

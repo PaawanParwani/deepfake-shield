@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -19,6 +20,10 @@ import torch
 import torch.nn as nn
 import yaml
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
+
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from video.src.dataset import create_dataloader, set_seed
 from video.src.model import build_model
@@ -138,7 +143,9 @@ def compute_evaluation_breakdown(
     }
 
     # Per manipulation method breakdown (evaluating each fake method vs all real samples)
-    real_video_scores = [video_scores[i] for i, v in enumerate(video_ids) if video_labels[i] == 0]
+    real_video_scores = [
+        video_scores[i] for i in range(len(video_ids)) if video_labels[i] == 0
+    ]
     real_video_labels = [0] * len(real_video_scores)
 
     for method in manipulation_methods:
@@ -273,10 +280,11 @@ def evaluate_split(
     set_seed(int(config.get("seed", 42)))
 
     device_setting = config.get("device", "auto")
-    device = torch.device("cuda" if (device_setting == "auto" and torch.cuda.is_available()) else "cpu")
+    if device_setting == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device_setting)
     logger.info("Evaluating on device: %s", device)
-
-    model = build_model(config, device=device)
 
     # Resolve checkpoint
     output_dir = Path(config.get("output_dir", "video/outputs"))
@@ -285,15 +293,28 @@ def evaluate_split(
         if default_ckpt.is_file():
             checkpoint_path = default_ckpt
         else:
-            logger.warning("No checkpoint provided or found at %s. Using initialized model weights.", default_ckpt)
+            raise FileNotFoundError(f"Trained video checkpoint not found: {default_ckpt}")
 
-    if checkpoint_path is not None and Path(checkpoint_path).is_file():
-        logger.info("Loading model weights from: %s", checkpoint_path)
-        ckpt = torch.load(checkpoint_path, map_location=device)
-        state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
-        model.load_state_dict(state_dict)
+    checkpoint_file = Path(checkpoint_path)
+    if not checkpoint_file.is_file():
+        raise FileNotFoundError(f"Trained video checkpoint not found: {checkpoint_file}")
+    logger.info("Loading model weights from: %s", checkpoint_file)
+    checkpoint = torch.load(checkpoint_file, map_location=device)
+    state_dict = (
+        checkpoint["model_state_dict"]
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
+        else checkpoint
+    )
+    if not isinstance(state_dict, dict):
+        raise ValueError("Video checkpoint does not contain a state dictionary.")
 
-    _, dataloader = create_dataloader(config, split=split, shuffle=False)
+    model_config = {**config, "pretrained": False}
+    model = build_model(model_config, device=device)
+    model.load_state_dict(state_dict, strict=True)
+
+    dataset, dataloader = create_dataloader(config, split=split, shuffle=False)
+    if not len(dataset):
+        raise ValueError(f"Evaluation split '{split}' contains no video samples.")
 
     frame_records, video_records = run_inference_on_split(model, dataloader, device)
     manipulation_methods = config.get(
