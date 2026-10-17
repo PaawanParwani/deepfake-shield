@@ -1057,9 +1057,9 @@ async def predict_frame(
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
     def compute_emotion_metrics(landmarks, bw: int, bh: int) -> Dict[str, Any]:
-        """Compute affective expression / emotion dynamics from MTCNN 5 facial landmarks."""
+        """Compute affective expression / emotion dynamics with occlusion awareness."""
         if landmarks is None or len(landmarks) < 5:
-            return {"emotion": "Focused / Natural", "sentiment": "neutral", "smile_score": 0.5}
+            return {"emotion": "Focused / Calm 👤", "sentiment": "neutral", "smile_score": 0.5}
 
         try:
             le = np.array(landmarks[0], dtype=np.float32)
@@ -1076,19 +1076,33 @@ async def predict_frame(
             nose_to_mouth = float(np.linalg.norm(mouth_center - nose))
             open_ratio = nose_to_mouth / eye_dist
 
-            if smile_ratio >= 0.82:
+            # Mouth corner elevation relative to mouth center (true smile curvature)
+            corner_lift = (mouth_center[1] - (ml[1] + mr[1]) / 2.0) / eye_dist
+
+            # Chin resting / Hand-to-face occlusion detection:
+            # If distance from nose to mouth is compressed or distorted by resting fist/hand
+            is_hand_occluded = open_ratio < 0.45 or abs(ml[1] - mr[1]) / eye_dist > 0.35
+
+            if is_hand_occluded:
+                emotion = "Thinking / Focused 🤔"
+                sentiment = "neutral"
+            elif smile_ratio >= 0.92 and corner_lift >= -0.02:
+                # Genuine smile: wide mouth AND elevated corners
                 emotion = "Smiling 😊"
                 sentiment = "positive"
-            elif open_ratio >= 0.72:
+            elif open_ratio >= 0.74:
+                # Significant vertical jaw drop
                 emotion = "Surprised 😲"
                 sentiment = "alert"
-            elif open_ratio >= 0.58 and smile_ratio >= 0.73:
+            elif open_ratio >= 0.68 and smile_ratio < 0.90:
+                # Vertical lip separation for speaking
                 emotion = "Speaking / Engaged 💬"
                 sentiment = "active"
-            elif smile_ratio >= 0.78:
-                emotion = "Cheerful 😊"
+            elif smile_ratio >= 0.89:
+                emotion = "Smiling 😊"
                 sentiment = "positive"
             else:
+                # Baseline resting facial expression
                 emotion = "Focused / Calm 👤"
                 sentiment = "neutral"
 
@@ -1118,16 +1132,30 @@ async def predict_frame(
             bx1, by1, bx2, by2 = box
             bw, bh = bx2 - bx1, by2 - by1
 
-            # 1. UI Bounding Box with natural head/forehead margins
-            ui_margin_x = int(bw * 0.15)
-            ui_margin_top = int(bh * 0.30)
-            ui_margin_bottom = int(bh * 0.12)
-            ui_box = [
-                int(max(0, bx1 - ui_margin_x)),
-                int(max(0, by1 - ui_margin_top)),
-                int(min(w, bx2 + ui_margin_x)),
-                int(min(h, by2 + ui_margin_bottom)),
-            ]
+            # 1. Golden-Ratio Anthropometric Face Framing (frames head, hair, chin without sagging into hand)
+            if lm is not None and len(lm) >= 5:
+                le = np.array(lm[0], dtype=np.float32)
+                re = np.array(lm[1], dtype=np.float32)
+                eye_cx = (le[0] + re[0]) / 2.0
+                eye_cy = (le[1] + re[1]) / 2.0
+                eye_dist = max(10.0, float(np.linalg.norm(re - le)))
+                ui_box = [
+                    int(max(0, eye_cx - 1.25 * eye_dist)),
+                    int(max(0, eye_cy - 1.25 * eye_dist)),
+                    int(min(w, eye_cx + 1.25 * eye_dist)),
+                    int(min(h, eye_cy + 1.55 * eye_dist)),
+                ]
+            else:
+                head_w = bw * 1.15
+                head_h = head_w * 1.18
+                cx_h = (bx1 + bx2) / 2.0
+                cy_h = (by1 + by2) / 2.0
+                ui_box = [
+                    int(max(0, cx_h - head_w / 2.0)),
+                    int(max(0, cy_h - head_h * 0.52)),
+                    int(min(w, cx_h + head_w / 2.0)),
+                    int(min(h, cy_h + head_h * 0.48)),
+                ]
 
             # 2. Aspect-Ratio Preserving Square Crop (matches FF++ training distribution)
             cx = int((bx1 + bx2) / 2)
@@ -1174,6 +1202,12 @@ async def predict_frame(
                 norm_face = (resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
                 transposed = np.transpose(norm_face, (2, 0, 1))
 
+                # Upper biometric face crop (eyes/forehead/nose) for occlusion resilience
+                upper_c = crop[:max(20, int(crop.shape[0] * 0.65)), :]
+                upper_resized = cv2.resize(upper_c, (VIDEO_IMAGE_SIZE, VIDEO_IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+                norm_upper = (upper_resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
+                upper_transposed = np.transpose(norm_upper, (2, 0, 1))
+
                 emotion_info = compute_emotion_metrics(lm, bw, bh)
 
                 extracted.append({
@@ -1181,6 +1215,7 @@ async def predict_frame(
                     "raw_box": box,
                     "crop": crop,
                     "transposed": transposed,
+                    "upper_transposed": upper_transposed,
                     "thumbnail": thumb_b64,
                     "center": [cx, cy],
                     "size": [int(bw), int(bh)],
@@ -1307,10 +1342,23 @@ async def predict_frame(
         raw_p_f = float(np.clip(raw_p_fake, 0.0, 1.0))
         sharpness = float(c_info.get("sharpness", 100.0))
 
+        # Dual-Region Occlusion-Tolerant Verification:
+        # If full face triggered elevated risk, verify unoccluded upper face (eyes/forehead)
+        # to ensure chin resting, hands, coffee cups, or microphones do not trigger deepfake false alarms.
+        if raw_p_f > 0.40 and "upper_transposed" in c_info and models.video_model is not None and torch is not None:
+            try:
+                u_tensor = torch.from_numpy(np.expand_dims(c_info["upper_transposed"], 0)).to(models.device)
+                with torch.no_grad():
+                    u_logits = models.video_model(u_tensor)
+                    u_probs = F.softmax(u_logits, dim=-1)
+                    u_fake = float(u_probs[0, 1].cpu().item())
+                if u_fake < 0.25:
+                    logger.debug("Upper face biometrics authentic (u_fake=%.4f). Dampening hand/chin occlusion.", u_fake)
+                    raw_p_f = min(raw_p_f, u_fake)
+            except Exception as u_err:
+                logger.debug("Upper face verification exception: %s", u_err)
+
         # Softness / Webcam blur compensation:
-        # Standard webcams at 480p/720p or under slight motion have softness (sharpness < 85).
-        # The CNN penalizes missing sensor high-frequency grain, making raw_p_fake -> 1.0.
-        # We damp elevated fake scores when sharpness indicates webcam softness, steering it towards neutral uncertainty.
         p_f = raw_p_f
         if sharpness < 85.0 and p_f > 0.40:
             softness_factor = max(0.50, min(1.0, (sharpness / 85.0) ** 0.5))

@@ -136,11 +136,21 @@
       }
 
       if (container) {
+        // Priority 1: dedicated Google Meet participant name elements
+        const nameEl = container.querySelector('.zWGUib, [data-self-name]');
+        if (nameEl) {
+          const val = (nameEl.getAttribute("data-self-name") || nameEl.textContent || "").trim();
+          const clean = val.replace(/\s*\(You\)$/i, "").trim();
+          if (clean && clean.toLowerCase() !== "you" && clean.length >= 2) return clean;
+        }
+
+        // Priority 2: other text labels (strictly skipping buttons & toolbars)
         const candidates = container.querySelectorAll(
-          '.zWGUib, [data-self-name], [data-hovercard-id], span.notranslate, .p2hjIb, .XE8e1e, [aria-label]'
+          '.zWGUib, [data-self-name], [data-hovercard-id], span.notranslate, .p2hjIb, .XE8e1e'
         );
         for (const el of candidates) {
-          const text = (el.getAttribute("data-self-name") || el.getAttribute("aria-label") || el.textContent || "").trim();
+          if (el.closest('button, [role="button"], [role="toolbar"], .VfPpkd-Bz112c-LgbsSe')) continue;
+          const text = (el.getAttribute("data-self-name") || el.textContent || "").trim();
           if (
             text &&
             text.length >= 2 &&
@@ -148,6 +158,8 @@
             !text.includes(":") &&
             !text.includes("%") &&
             !text.includes("Target") &&
+            !text.toLowerCase().includes("reframe") &&
+            !text.toLowerCase().includes("visual effect") &&
             !text.toLowerCase().includes("turn off") &&
             !text.toLowerCase().includes("turn on") &&
             !text.toLowerCase().includes("microphone") &&
@@ -164,10 +176,10 @@
       const selfEl = document.querySelector('[data-self-name], .zWGUib');
       if (selfEl) {
         const name = (selfEl.getAttribute("data-self-name") || selfEl.textContent || "").trim().replace(/\s*\(You\)$/i, "").trim();
-        if (name && name.length >= 2 && name.toLowerCase() !== "you") return name;
+        if (name && name.length >= 2 && name.toLowerCase() !== "you" && !name.toLowerCase().includes("reframe")) return name;
       }
     } catch {}
-    return "Verified Participant";
+    return "Verified Human";
   }
 
   // Robust Mirroring Detection (Inspects entire ancestor DOM chain up to body)
@@ -611,8 +623,10 @@
     const totalFaces = activeList.length;
     const suspiciousFaces = activeList.filter((f) => f.verdict === "suspicious");
     const uncertainFaces = activeList.filter((f) => f.verdict === "uncertain");
-    const primaryEmotion = activeList.length > 0 ? activeList[0].emotion : (emotion || "Focused / Calm 👤");
-    const displayName = participantName && participantName !== "Verified Participant" ? participantName.toUpperCase() : "VERIFIED HUMAN";
+    let displayName = participantName && participantName !== "Verified Participant" && participantName !== "Verified Human" ? participantName.toUpperCase() : "VERIFIED HUMAN";
+    if (displayName.includes("REFRAME") || displayName === "YOU") {
+      displayName = "VERIFIED HUMAN";
+    }
 
     if (suspiciousFaces.length > 0) {
       const maxRisk = Math.max(...suspiciousFaces.map((f) => f.confidence));
@@ -773,7 +787,8 @@
           el.style.height = `${Math.round(face.current.h)}px`;
           el.style.opacity = face.opacity.toFixed(2);
 
-          const nameDisplay = face.userName || "Verified Participant";
+          const isPrimary = face.label.includes("#1") || trackedFaces.size === 1;
+          const nameDisplay = isPrimary ? (face.userName || "Verified Human") : face.label;
           const emotionDisplay = face.emotion || "Focused / Calm 👤";
 
           if (face.verdict === "suspicious") {
