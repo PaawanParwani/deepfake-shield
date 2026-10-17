@@ -492,6 +492,7 @@
       const effX2 = mirrored ? (fw - bx1) : bx2;
 
       const screenX = geom.left + geom.offsetX + (effX1 / fw) * geom.renderW;
+      const screenY = geom.top + geom.offsetY + (by1 / fh) * geom.renderH;
       const rawW = ((effX2 - effX1) / fw) * geom.renderW;
       const rawH = ((by2 - by1) / fh) * geom.renderH;
       // Proportional face clamp: height strictly capped at 1.12x width (stops at chin line, never captures hands or wrists)
