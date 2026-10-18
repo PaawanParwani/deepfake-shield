@@ -180,12 +180,13 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
         logger.info("No raw .mp4 videos found in '%s'. Checking for authentic FaceForensics++ face crops bundle...", base_dir)
         crop_zip = Path("deploy/video_faceforensics_crops.zip")
         crops_dir = Path("video/data/crops")
-        if not crops_dir.exists() and crop_zip.exists():
+        if crop_zip.exists():
             import zipfile
-            logger.info("Unpacking %s...", crop_zip)
+            logger.info("Extracting authentic FaceForensics++ crops from %s...", crop_zip)
             with zipfile.ZipFile(crop_zip, "r") as z:
                 z.extractall(".")
             logger.info("Extracted FaceForensics++ face crops successfully.")
+
 
         train_real = sorted(glob.glob("video/data/crops/train/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/real/*.jpg"))
         train_fake = sorted(glob.glob("video/data/crops/train/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/fake/*.jpg"))
