@@ -188,19 +188,24 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
             logger.info("Extracted FaceForensics++ face crops successfully.")
 
 
-        train_real = sorted(glob.glob("video/data/crops/train/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/real/*.jpg"))
-        train_fake = sorted(glob.glob("video/data/crops/train/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/fake/*.jpg"))
-        val_real = sorted(glob.glob("video/data/crops/val/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/val/real/*.jpg"))
-        val_fake = sorted(glob.glob("video/data/crops/val/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/val/fake/*.jpg"))
+        train_real = sorted(list(set(glob.glob("video/data/crops/train/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/real/*.jpg"))))
+        train_fake = sorted(list(set(glob.glob("video/data/crops/train/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/fake/*.jpg"))))
+        val_real = sorted(list(set(glob.glob("video/data/crops/val/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/val/real/*.jpg"))))
+        val_fake = sorted(list(set(glob.glob("video/data/crops/val/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/val/fake/*.jpg"))))
 
         if train_real or train_fake:
             logger.info("Loaded authentic face crops: Train: %d Real, %d Fake | Val: %d Real, %d Fake", len(train_real), len(train_fake), len(val_real), len(val_fake))
-            def extract_vid_id(p: str) -> str:
+            def parse_crop_item(p: str, is_fake: bool) -> Tuple[str, int, str, str]:
                 stem = Path(p).stem
-                return stem.rsplit("_f", 1)[0] if "_f" in stem else stem
+                vid_id = stem.rsplit("_f", 1)[0] if "_f" in stem else stem
+                if is_fake:
+                    parts = vid_id.split("_")
+                    method = parts[1] if len(parts) >= 2 else "manipulated"
+                    return (p, 1, vid_id, method)
+                return (p, 0, vid_id, "real")
 
-            train_samples = [(p, 0, extract_vid_id(p), "real") for p in train_real] + [(p, 1, extract_vid_id(p), "manipulated") for p in train_fake]
-            val_samples = [(p, 0, extract_vid_id(p), "real") for p in val_real] + [(p, 1, extract_vid_id(p), "manipulated") for p in val_fake]
+            train_samples = [parse_crop_item(p, False) for p in train_real] + [parse_crop_item(p, True) for p in train_fake]
+            val_samples = [parse_crop_item(p, False) for p in val_real] + [parse_crop_item(p, True) for p in val_fake]
             random.seed(42)
             random.shuffle(train_samples)
             return train_samples, val_samples
@@ -261,7 +266,7 @@ def train(args: argparse.Namespace) -> None:
         )
 
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.RandomResizedCrop(224, scale=(0.85, 1.0)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
         transforms.ToTensor(),
@@ -283,11 +288,19 @@ def train(args: argparse.Namespace) -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     logger.info("Initializing Pretrained EfficientNet-B0 (NoisyStudent weights)...")
-    model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2, drop_rate=0.2)
+    model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2, drop_rate=0.3)
+
+    # Freeze stem and early blocks to retain low-level edge/texture representations and avoid overfitting
+    frozen_tensors = 0
+    for name, param in model.named_parameters():
+        if any(pfx in name for pfx in ["conv_stem", "bn1", "blocks.0.", "blocks.1.", "blocks.2."]):
+            param.requires_grad = False
+            frozen_tensors += 1
+    logger.info("Stabilized backbone: froze %d early parameter tensors, training higher artifact representation blocks.", frozen_tensors)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     best_video_auc = 0.0
@@ -324,9 +337,10 @@ def train(args: argparse.Namespace) -> None:
         val_labels, val_probs = [], []
         video_scores: Dict[str, List[float]] = {}
         video_labels: Dict[str, int] = {}
+        video_methods: Dict[str, str] = {}
 
         with torch.no_grad():
-            for images, labels, v_ids, _ in val_loader:
+            for images, labels, v_ids, methods in val_loader:
                 images = images.to(device)
                 outputs = model(images)
                 probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
@@ -334,46 +348,71 @@ def train(args: argparse.Namespace) -> None:
                 val_labels.extend(labels.numpy())
                 val_probs.extend(probs)
 
-                for vid, p, y in zip(v_ids, probs, labels.numpy()):
+                for vid, p, y, m in zip(v_ids, probs, labels.numpy(), methods):
                     if vid not in video_scores:
                         video_scores[vid] = []
                         video_labels[vid] = int(y)
+                        video_methods[vid] = str(m)
                     video_scores[vid].append(float(p))
 
         val_auc, val_thresh, val_cal_acc = compute_calibrated_metrics(np.array(val_labels), np.array(val_probs))
         val_fixed_acc = float(accuracy_score(val_labels, np.array(val_probs) >= 0.5))
 
-        # Video-level Top-35% Pooling (focusing on manipulated artifact frames)
-        vid_preds, vid_targets = [], []
+        # Video-level aggregation: standard FaceForensics++ mean frame probability pooling
+        vid_preds, vid_targets, vid_meth_list = [], [], []
         for vid, sc in video_scores.items():
-            k = max(1, int(np.ceil(len(sc) * 0.35)))
-            top_k = sorted(sc, reverse=True)[:k]
-            vid_preds.append(float(np.mean(top_k)))
+            vid_preds.append(float(np.mean(sc)))
             vid_targets.append(video_labels[vid])
+            vid_meth_list.append(video_methods[vid])
 
         video_auc, opt_thresh, video_cal_acc = compute_calibrated_metrics(np.array(vid_targets), np.array(vid_preds))
         video_fixed_acc = float(accuracy_score(vid_targets, np.array(vid_preds) >= 0.5))
 
+        # Per-method accuracy breakdown
+        per_method_acc = {}
+        for m in sorted(list(set(vid_meth_list))):
+            m_idx = [i for i, meth in enumerate(vid_meth_list) if meth == m]
+            if m_idx:
+                m_t = np.array([vid_targets[i] for i in m_idx])
+                m_p = np.array([vid_preds[i] >= 0.5 for i in m_idx])
+                per_method_acc[m] = float(accuracy_score(m_t, m_p))
+
         elapsed = time.time() - t0
+        breakdown_str = " | ".join(f"{m}: {acc * 100.0:.1f}%" for m, acc in per_method_acc.items())
         logger.info(
-            "Epoch [%d/%d] (%.1fs) | Train Acc: %.1f%% | Val Frame Acc (Fixed 0.5): %.1f%% | Video Acc (Fixed 0.5): %.1f%% | Video Acc (Calibrated @ %.2f): %.1f%% | Video AUC: %.4f",
-            epoch, args.epochs, elapsed, train_acc * 100.0, val_fixed_acc * 100.0, video_fixed_acc * 100.0, opt_thresh, video_cal_acc * 100.0, video_auc
+            "Epoch [%d/%d] (%.1fs) | Train Acc: %.1f%% | Val Frame Acc: %.1f%% | Video Acc: %.1f%% (Calibrated: %.1f%%) | Video AUC: %.4f",
+            epoch, args.epochs, elapsed, train_acc * 100.0, val_fixed_acc * 100.0, video_fixed_acc * 100.0, video_cal_acc * 100.0, video_auc
         )
+        logger.info("  --> Method Breakdown: %s", breakdown_str)
 
         effective_video_acc = max(video_fixed_acc, video_cal_acc)
         if video_auc > best_video_auc or effective_video_acc > best_val_acc:
             best_video_auc = video_auc
             best_val_acc = effective_video_acc
-            torch.save({
+            metrics_payload = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "val_frame_acc": float(val_cal_acc),
                 "val_frame_auc": float(val_auc),
                 "video_acc": float(effective_video_acc),
                 "video_auc": float(video_auc),
+                "per_method_acc": per_method_acc,
                 "best_threshold": float(opt_thresh),
                 "model_name": "efficientnet_b0",
-            }, best_model_path)
+            }
+            torch.save(metrics_payload, best_model_path)
+            # Also save JSON metrics for direct paper reporting
+            with open(output_dir / "metrics.json", "w", encoding="utf-8") as jf:
+                json.dump({
+                    "overall": {
+                        "video_acc": float(effective_video_acc),
+                        "video_auc": float(video_auc),
+                        "frame_acc": float(val_fixed_acc),
+                        "frame_auc": float(val_auc),
+                        "best_threshold": float(opt_thresh),
+                    },
+                    "per_method": per_method_acc,
+                }, jf, indent=2)
             logger.info("  --> Saved new best checkpoint to %s (Video AUC: %.4f, Video Acc: %.1f%%)",
                         best_model_path, video_auc, effective_video_acc * 100.0)
 
