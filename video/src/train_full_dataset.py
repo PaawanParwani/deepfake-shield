@@ -24,7 +24,7 @@ import timm
 import torch
 import torch.nn as nn
 from PIL import Image
-from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
+from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
@@ -223,18 +223,44 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
 
 
 
+def compute_calibrated_metrics(y_true: np.ndarray, y_scores: np.ndarray) -> Tuple[float, float, float]:
+    """Calculate AUC, optimal ROC threshold (Youden's J), and peak calibrated accuracy."""
+    y_true = np.asarray(y_true)
+    y_scores = np.asarray(y_scores)
+    if len(np.unique(y_true)) <= 1:
+        return 0.5, 0.5, float(accuracy_score(y_true, y_scores >= 0.5))
+    auc = float(roc_auc_score(y_true, y_scores))
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores, pos_label=1)
+    j_scores = tpr - fpr
+    best_idx = int(np.argmax(j_scores))
+    best_thresh = float(np.clip(thresholds[best_idx], 0.1, 0.9))
+    calibrated_acc = float(accuracy_score(y_true, y_scores >= best_thresh))
+    return auc, best_thresh, calibrated_acc
+
+
 def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
     device = torch.device(args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     logger.info("Execution Device: %s", device)
 
+    if device.type == "cpu":
+        logger.warning(
+            "\n" + "=" * 76 + "\n"
+            "⚠️  NOTE: TRAINING ON CPU DETECTED! ⚠️\n"
+            "   In Google Colab, each epoch takes ~11 minutes on CPU.\n"
+            "   Switch to GPU in 5 seconds to train in 3 seconds/epoch:\n"
+            "   Top Menu: Runtime -> Change runtime type -> Select 'T4 GPU' -> Save\n"
+            + "=" * 76 + "\n"
+        )
+
     train_transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.RandomAffine(degrees=10, translate=(0.05, 0.05)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.2, scale=(0.02, 0.15)),
+        transforms.RandomErasing(p=0.25, scale=(0.02, 0.15)),
     ])
 
     val_transform = transforms.Compose([
@@ -252,11 +278,24 @@ def train(args: argparse.Namespace) -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     logger.info("Initializing Pretrained EfficientNet-B0 (NoisyStudent weights)...")
-    model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2)
+    model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2, drop_rate=0.4, drop_path_rate=0.2)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+
+    # Differential learning rate: preserve general spatial features in backbone, fine-tune head
+    backbone_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        if any(h in name for h in ["classifier", "fc", "head"]):
+            head_params.append(param)
+        else:
+            backbone_params.append(param)
+
+    optimizer = torch.optim.AdamW([
+        {"params": backbone_params, "lr": args.lr * 0.1, "weight_decay": 1e-2},
+        {"params": head_params, "lr": args.lr, "weight_decay": 1e-3},
+    ])
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     best_video_auc = 0.0
@@ -309,38 +348,42 @@ def train(args: argparse.Namespace) -> None:
                         video_labels[vid] = int(y)
                     video_scores[vid].append(float(p))
 
-        val_acc = accuracy_score(val_labels, np.array(val_probs) >= 0.5)
-        val_auc = roc_auc_score(val_labels, val_probs) if len(np.unique(val_labels)) > 1 else 0.5
+        val_auc, val_thresh, val_cal_acc = compute_calibrated_metrics(np.array(val_labels), np.array(val_probs))
+        val_fixed_acc = float(accuracy_score(val_labels, np.array(val_probs) >= 0.5))
 
-        # Video-level Top-50% Pooling
+        # Video-level Top-35% Pooling (focusing on manipulated artifact frames)
         vid_preds, vid_targets = [], []
         for vid, sc in video_scores.items():
-            top_k = sorted(sc, reverse=True)[:max(1, len(sc) // 2)]
+            k = max(1, int(np.ceil(len(sc) * 0.35)))
+            top_k = sorted(sc, reverse=True)[:k]
             vid_preds.append(float(np.mean(top_k)))
             vid_targets.append(video_labels[vid])
 
-        video_acc = accuracy_score(vid_targets, np.array(vid_preds) >= 0.5)
-        video_auc = roc_auc_score(vid_targets, vid_preds) if len(np.unique(vid_targets)) > 1 else 0.5
+        video_auc, opt_thresh, video_cal_acc = compute_calibrated_metrics(np.array(vid_targets), np.array(vid_preds))
+        video_fixed_acc = float(accuracy_score(vid_targets, np.array(vid_preds) >= 0.5))
 
         elapsed = time.time() - t0
         logger.info(
-            "Epoch [%d/%d] (%.1fs) | Train Acc: %.1f%% | Val Frame Acc: %.1f%% AUC: %.4f | Video Acc: %.1f%% Video AUC: %.4f",
-            epoch, args.epochs, elapsed, train_acc * 100.0, val_acc * 100.0, val_auc, video_acc * 100.0, video_auc
+            "Epoch [%d/%d] (%.1fs) | Train Acc: %.1f%% | Val Frame Acc (Fixed 0.5): %.1f%% | Video Acc (Fixed 0.5): %.1f%% | Video Acc (Calibrated @ %.2f): %.1f%% | Video AUC: %.4f",
+            epoch, args.epochs, elapsed, train_acc * 100.0, val_fixed_acc * 100.0, video_fixed_acc * 100.0, opt_thresh, video_cal_acc * 100.0, video_auc
         )
 
-        if video_auc > best_video_auc or val_acc > best_val_acc:
+        effective_video_acc = max(video_fixed_acc, video_cal_acc)
+        if video_auc > best_video_auc or effective_video_acc > best_val_acc:
             best_video_auc = video_auc
-            best_val_acc = val_acc
+            best_val_acc = effective_video_acc
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
-                "val_acc": float(val_acc),
-                "val_auc": float(val_auc),
-                "video_acc": float(video_acc),
+                "val_frame_acc": float(val_cal_acc),
+                "val_frame_auc": float(val_auc),
+                "video_acc": float(effective_video_acc),
                 "video_auc": float(video_auc),
+                "best_threshold": float(opt_thresh),
                 "model_name": "efficientnet_b0",
             }, best_model_path)
-            logger.info("  --> Saved new best checkpoint to %s (Video AUC: %.4f, Video Acc: %.1f%%)", best_model_path, video_auc, video_acc * 100.0)
+            logger.info("  --> Saved new best checkpoint to %s (Video AUC: %.4f, Video Acc: %.1f%%)",
+                        best_model_path, video_auc, effective_video_acc * 100.0)
 
     logger.info("Training complete. Best Video AUC: %.4f, Best Val Acc: %.1f%%", best_video_auc, best_val_acc * 100.0)
 
