@@ -26,6 +26,7 @@ import pandas as pd
 import soundfile as sf
 import torch
 import torch.nn as nn
+import torchaudio.transforms as T
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
@@ -44,41 +45,51 @@ def set_seed(seed: int = 42) -> None:
 
 
 class RNNAudioClassifier(nn.Module):
-    """Conv1d temporal feature extractor + 2-layer Bidirectional GRU with Mean+Std Statistics Pooling."""
+    """Deep Mel-Spectrogram 2D Convolutional Network for ASVspoof Voice Clone Detection."""
 
     def __init__(self, hidden_dim: int = 64, num_classes: int = 2) -> None:
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv1d(1, 32, kernel_size=16, stride=8),
-            nn.BatchNorm1d(32),
-            nn.LeakyReLU(0.1),
-            nn.Conv1d(32, 64, kernel_size=8, stride=4),
-            nn.BatchNorm1d(64),
-            nn.LeakyReLU(0.1),
-            nn.Conv1d(64, hidden_dim, kernel_size=4, stride=2),
-            nn.BatchNorm1d(hidden_dim),
-            nn.LeakyReLU(0.1),
+        self.mel_spec = T.MelSpectrogram(
+            sample_rate=16000,
+            n_fft=1024,
+            hop_length=256,
+            n_mels=80,
+            f_min=20,
+            f_max=8000,
         )
-        self.rnn = nn.GRU(hidden_dim, hidden_dim, num_layers=2, batch_first=True, bidirectional=True, dropout=0.25)
-        # Mean + Std pooling over bidirectional GRU: (hidden_dim * 2) * 2 = hidden_dim * 4
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_dim * 4, 64),
-            nn.LayerNorm(64),
+        self.to_db = T.AmplitudeToDB()
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Dropout(0.35),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        self.fc = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(64, num_classes),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        feat = self.conv(x).transpose(1, 2)
-        out, _ = self.rnn(feat)
-        # Statistics pooling captures both mean timbre and temporal pitch jitter
-        mean_pooled = torch.mean(out, dim=1)
-        std_pooled = torch.std(out, dim=1, unbiased=False)
-        pooled = torch.cat([mean_pooled, std_pooled], dim=1)
-        return self.fc(pooled)
+    def forward(self, wav: torch.Tensor) -> torch.Tensor:
+        if wav.dim() == 3:
+            wav = wav.squeeze(1)
+        spec = self.to_db(self.mel_spec(wav)).unsqueeze(1)
+        mean = spec.mean(dim=(2, 3), keepdim=True)
+        std = spec.std(dim=(2, 3), keepdim=True) + 1e-6
+        norm_spec = (spec - mean) / std
+        feat = self.conv(norm_spec).flatten(1)
+        return self.fc(feat)
 
 
 class ASVspoofDataset(Dataset):
@@ -163,7 +174,7 @@ def ensure_audio_data(bundle_dir: str = "audio/data/asvspoof_bundle", zip_path: 
 
 
 def compute_metrics(labels: np.ndarray, scores: np.ndarray) -> Tuple[float, float, float, float]:
-    """Compute ROC-AUC, optimal Youden threshold, calibrated accuracy, and EER."""
+    """Compute ROC-AUC, optimal threshold, calibrated accuracy, and EER."""
     labels = np.asarray(labels)
     scores = np.asarray(scores)
     if len(np.unique(labels)) <= 1:
@@ -177,13 +188,17 @@ def compute_metrics(labels: np.ndarray, scores: np.ndarray) -> Tuple[float, floa
     eer_idx = int(np.argmin(np.abs(fpr - fnr)))
     eer = float((fpr[eer_idx] + fnr[eer_idx]) / 2.0)
 
-    # Youden's J statistic for optimal operating point
-    j_scores = tpr - fpr
-    best_idx = int(np.argmax(j_scores))
-    best_thresh = float(np.clip(thresholds[best_idx], 0.1, 0.9))
-    calibrated_acc = float(accuracy_score(labels, scores >= best_thresh))
+    # Grid search optimal operating threshold for peak accuracy
+    thresholds_to_test = np.linspace(0.1, 0.9, 81)
+    best_acc = float(accuracy_score(labels, scores >= 0.5))
+    best_thresh = 0.5
+    for t in thresholds_to_test:
+        acc = float(accuracy_score(labels, scores >= t))
+        if acc > best_acc:
+            best_acc = acc
+            best_thresh = float(t)
 
-    return auc, best_thresh, calibrated_acc, eer
+    return auc, best_thresh, best_acc, eer
 
 
 def train(args: argparse.Namespace) -> None:
@@ -292,7 +307,7 @@ def train(args: argparse.Namespace) -> None:
                 "val_auc": float(auc),
                 "val_eer": float(eer),
                 "best_threshold": float(opt_thresh),
-                "architecture": "recurrent_rnn_gru_stat_pooling",
+                "architecture": "mel_spectrogram_2d_cnn",
             }, best_audio_path)
             logger.info("  --> Saved new best checkpoint to %s (Val Acc: %.1f%%, AUC: %.4f, EER: %.2f%%)",
                         best_audio_path, effective_acc * 100.0, auc, eer * 100.0)
@@ -306,11 +321,11 @@ if __name__ == "__main__":
     parser.add_argument("--zip-path", type=str, default="deploy/audio_asvspoof_bundle.zip")
     parser.add_argument("--train-parquet", type=str, default="audio/data/LA/data/train-00000-of-00001.parquet")
     parser.add_argument("--val-parquet", type=str, default="audio/data/LA/data/validation-00000-of-00001.parquet")
-    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--max-train-samples", type=int, default=1000)
     parser.add_argument("--max-val-samples", type=int, default=400)
-    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--seed", type=int, default=42)
     cli_args = parser.parse_args()

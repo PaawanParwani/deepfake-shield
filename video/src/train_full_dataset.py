@@ -195,8 +195,12 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
 
         if train_real or train_fake:
             logger.info("Loaded authentic face crops: Train: %d Real, %d Fake | Val: %d Real, %d Fake", len(train_real), len(train_fake), len(val_real), len(val_fake))
-            train_samples = [(p, 0, Path(p).parent.name, "real") for p in train_real] + [(p, 1, Path(p).parent.name, "manipulated") for p in train_fake]
-            val_samples = [(p, 0, Path(p).parent.name, "real") for p in val_real] + [(p, 1, Path(p).parent.name, "manipulated") for p in val_fake]
+            def extract_vid_id(p: str) -> str:
+                stem = Path(p).stem
+                return stem.rsplit("_f", 1)[0] if "_f" in stem else stem
+
+            train_samples = [(p, 0, extract_vid_id(p), "real") for p in train_real] + [(p, 1, extract_vid_id(p), "manipulated") for p in train_fake]
+            val_samples = [(p, 0, extract_vid_id(p), "real") for p in val_real] + [(p, 1, extract_vid_id(p), "manipulated") for p in val_fake]
             random.seed(42)
             random.shuffle(train_samples)
             return train_samples, val_samples
@@ -224,18 +228,21 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
 
 
 def compute_calibrated_metrics(y_true: np.ndarray, y_scores: np.ndarray) -> Tuple[float, float, float]:
-    """Calculate AUC, optimal ROC threshold (Youden's J), and peak calibrated accuracy."""
+    """Calculate AUC, optimal ROC threshold, and peak calibrated accuracy."""
     y_true = np.asarray(y_true)
     y_scores = np.asarray(y_scores)
     if len(np.unique(y_true)) <= 1:
         return 0.5, 0.5, float(accuracy_score(y_true, y_scores >= 0.5))
     auc = float(roc_auc_score(y_true, y_scores))
-    fpr, tpr, thresholds = roc_curve(y_true, y_scores, pos_label=1)
-    j_scores = tpr - fpr
-    best_idx = int(np.argmax(j_scores))
-    best_thresh = float(np.clip(thresholds[best_idx], 0.1, 0.9))
-    calibrated_acc = float(accuracy_score(y_true, y_scores >= best_thresh))
-    return auc, best_thresh, calibrated_acc
+    thresholds_to_test = np.linspace(0.1, 0.9, 81)
+    best_acc = float(accuracy_score(y_true, y_scores >= 0.5))
+    best_thresh = 0.5
+    for t in thresholds_to_test:
+        acc = float(accuracy_score(y_true, y_scores >= t))
+        if acc > best_acc:
+            best_acc = acc
+            best_thresh = float(t)
+    return auc, best_thresh, best_acc
 
 
 def train(args: argparse.Namespace) -> None:
@@ -256,11 +263,9 @@ def train(args: argparse.Namespace) -> None:
     train_transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-        transforms.RandomAffine(degrees=10, translate=(0.05, 0.05)),
+        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.25, scale=(0.02, 0.15)),
     ])
 
     val_transform = transforms.Compose([
@@ -278,24 +283,11 @@ def train(args: argparse.Namespace) -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     logger.info("Initializing Pretrained EfficientNet-B0 (NoisyStudent weights)...")
-    model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2, drop_rate=0.4, drop_path_rate=0.2)
+    model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2, drop_rate=0.2)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-
-    # Differential learning rate: preserve general spatial features in backbone, fine-tune head
-    backbone_params = []
-    head_params = []
-    for name, param in model.named_parameters():
-        if any(h in name for h in ["classifier", "fc", "head"]):
-            head_params.append(param)
-        else:
-            backbone_params.append(param)
-
-    optimizer = torch.optim.AdamW([
-        {"params": backbone_params, "lr": args.lr * 0.1, "weight_decay": 1e-2},
-        {"params": head_params, "lr": args.lr, "weight_decay": 1e-3},
-    ])
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     best_video_auc = 0.0
