@@ -292,17 +292,24 @@ def train(args: argparse.Namespace) -> None:
     logger.info("Initializing Pretrained EfficientNet-B0 (NoisyStudent weights)...")
     model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=2, drop_rate=0.3)
 
-    # Freeze stem and early blocks to retain low-level edge/texture representations and avoid overfitting
-    frozen_tensors = 0
+    # Two-tier differential learning rate: fine-tune lower layers gently (0.25x lr) while training upper artifact blocks at full lr
+    backbone_params = []
+    head_params = []
     for name, param in model.named_parameters():
-        if any(pfx in name for pfx in ["conv_stem", "bn1", "blocks.0.", "blocks.1.", "blocks.2."]):
-            param.requires_grad = False
-            frozen_tensors += 1
-    logger.info("Stabilized backbone: froze %d early parameter tensors, training higher artifact representation blocks.", frozen_tensors)
+        if any(h in name for h in ["classifier", "conv_head", "bn2", "blocks.5.", "blocks.6."]):
+            head_params.append(param)
+        else:
+            backbone_params.append(param)
+
+    optimizer = torch.optim.AdamW([
+        {"params": backbone_params, "lr": args.lr * 0.25},
+        {"params": head_params, "lr": args.lr},
+    ], weight_decay=1e-4)
+    logger.info("Differential LR applied: %d backbone tensors @ %.1e, %d head tensors @ %.1e",
+                len(backbone_params), args.lr * 0.25, len(head_params), args.lr)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     best_video_auc = 0.0
@@ -334,7 +341,7 @@ def train(args: argparse.Namespace) -> None:
         scheduler.step()
         train_acc = correct / max(1, total)
 
-        # Validation
+        # Validation with Test-Time Augmentation (TTA)
         model.eval()
         val_labels, val_probs = [], []
         video_scores: Dict[str, List[float]] = {}
@@ -345,7 +352,8 @@ def train(args: argparse.Namespace) -> None:
             for images, labels, v_ids, methods in val_loader:
                 images = images.to(device)
                 outputs = model(images)
-                probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
+                outputs_flip = model(torch.flip(images, dims=[3]))
+                probs = torch.softmax(0.5 * (outputs + outputs_flip), dim=1)[:, 1].cpu().numpy()
 
                 val_labels.extend(labels.numpy())
                 val_probs.extend(probs)
@@ -360,10 +368,12 @@ def train(args: argparse.Namespace) -> None:
         val_auc, val_thresh, val_cal_acc = compute_calibrated_metrics(np.array(val_labels), np.array(val_probs))
         val_fixed_acc = float(accuracy_score(val_labels, np.array(val_probs) >= 0.5))
 
-        # Video-level aggregation: standard FaceForensics++ mean frame probability pooling
+        # Video-level aggregation: Top-70% trimmed mean pooling (captures high-artifact frames while resisting noise)
         vid_preds, vid_targets, vid_meth_list = [], [], []
         for vid, sc in video_scores.items():
-            vid_preds.append(float(np.mean(sc)))
+            k = max(2, int(np.ceil(len(sc) * 0.70)))
+            topk_score = float(np.mean(sorted(sc, reverse=True)[:k]))
+            vid_preds.append(topk_score)
             vid_targets.append(video_labels[vid])
             vid_meth_list.append(video_methods[vid])
 
@@ -424,7 +434,7 @@ def train(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Full FaceForensics++ Video Deepfake Detector")
     parser.add_argument("--data-dir", type=str, default="video/data/FaceForensics++/FaceForensics++_C23", help="Path to FaceForensics++ C23 directory")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=12, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--frames-per-video", type=int, default=6, help="Frames sampled per video")
     parser.add_argument("--num-videos-per-method", type=int, default=100, help="Videos sampled per manipulation method")
