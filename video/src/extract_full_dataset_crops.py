@@ -41,39 +41,37 @@ def extract_face_crops_from_video(
     step = max(1, total_frames // frames_per_vid)
     indices = [min(i * step, total_frames - 1) for i in range(frames_per_vid)]
 
-    crops = []
-    last_box = None
-
+    # 1. Detect face on the first valid frame
+    detected_box = None
+    first_frames = []
     for f_idx in indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
         ret, frame = cap.read()
-        if not ret or frame is None:
-            continue
+        if ret and frame is not None:
+            first_frames.append((f_idx, frame))
+            if detected_box is None:
+                h, w = frame.shape[:2]
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                try:
+                    boxes, _ = mtcnn.detect(frame_rgb)
+                    if boxes is not None and len(boxes) > 0 and boxes[0] is not None:
+                        bx1, by1, bx2, by2 = boxes[0]
+                        bw = bx2 - bx1
+                        bh = by2 - by1
+                        x1 = max(0, int(bx1 - face_margin * bw))
+                        y1 = max(0, int(by1 - face_margin * bh))
+                        x2 = min(w, int(bx2 + face_margin * bw))
+                        y2 = min(h, int(by2 + face_margin * bh))
+                        detected_box = (x1, y1, x2, y2)
+                except Exception:
+                    pass
 
+    crops = []
+    for f_idx, frame in first_frames:
         h, w = frame.shape[:2]
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        box = None
-        try:
-            boxes, _ = mtcnn.detect(frame_rgb)
-            if boxes is not None and len(boxes) > 0 and boxes[0] is not None:
-                box = boxes[0]
-        except Exception:
-            box = None
-
-        if box is not None:
-            bx1, by1, bx2, by2 = box
-            bw = bx2 - bx1
-            bh = by2 - by1
-            x1 = max(0, int(bx1 - face_margin * bw))
-            y1 = max(0, int(by1 - face_margin * bh))
-            x2 = min(w, int(bx2 + face_margin * bw))
-            y2 = min(h, int(by2 + face_margin * bh))
-            last_box = (x1, y1, x2, y2)
-        elif last_box is not None:
-            x1, y1, x2, y2 = last_box
+        if detected_box is not None:
+            x1, y1, x2, y2 = detected_box
         else:
-            # Fallback to centered face crop
             size = int(min(h, w) * 0.45)
             cx, cy = w // 2, int(h * 0.40)
             x1 = max(0, cx - size // 2)
@@ -209,8 +207,8 @@ if __name__ == "__main__":
     parser.add_argument("--base-dir", type=str, default="video/data/FaceForensics++/FaceForensics++_C23")
     parser.add_argument("--splits-dir", type=str, default="video/data/FaceForensics++/splits")
     parser.add_argument("--output-dir", type=str, default="video/data/crops")
-    parser.add_argument("--train-pairs", type=int, default=80)
-    parser.add_argument("--val-pairs", type=int, default=24)
+    parser.add_argument("--train-pairs", type=int, default=160)
+    parser.add_argument("--val-pairs", type=int, default=32)
     parser.add_argument("--frames-per-vid", type=int, default=6)
     args = parser.parse_args()
 
