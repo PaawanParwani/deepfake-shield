@@ -65,5 +65,11 @@ Thumbs.db
 *.swp
 *.swo
 *~
-*.log
 deploy/cloudflared.exe
+
+# Temporary bundles and build caches
+*.zip
+!deploy/*.zip
+.gradle/
+mobile/android/.gradle/
+scratch/
