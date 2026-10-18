@@ -102,13 +102,13 @@ Both neural architectures were trained on **Google Colab** leveraging dedicated 
 - **Problem:** AI voice clones (ElevenLabs, SV2TTS, Tacotron) and voice conversion attacks.
 - **Model:** 1D Temporal Convolution feature extractor combined with a 2-layer Bidirectional GRU and linear classification head.
 - **Input:** 4-second audio window normalized and resampled to 16,000 Hz mono (64,000 samples).
-- **Colab Notebook:** [`audio/notebooks/`](audio/notebooks/)
+- **Colab Notebook:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/PaawanParwani/deepfake-shield/blob/main/audio/notebooks/train_audio_asvspoof_colab.ipynb) [`train_audio_asvspoof_colab.ipynb`](audio/notebooks/train_audio_asvspoof_colab.ipynb)
 
 ### 2. Visual Deepfake Face Detection (Jai)
 - **Problem:** Neural facial reenactment, synthetic face swaps, and identity replacement.
 - **Model:** `EfficientNet-B0` backbone initialized with ImageNet weights, fine-tuned on extracted FaceForensics++ face crops.
 - **Input:** $224 \times 224$ normalized RGB face crops with ImageNet normalization.
-- **Colab Notebook:** [`video/notebooks/`](video/notebooks/)
+- **Colab Notebook:** [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/PaawanParwani/deepfake-shield/blob/main/video/notebooks/train_video_faceforensics_colab.ipynb) [`train_video_faceforensics_colab.ipynb`](video/notebooks/train_video_faceforensics_colab.ipynb)
 
 ### 3. Multimodal Fusion & Defense Engine (Paawan)
 - **Cross-Modal Attention:** Evaluates temporal correlation between spoken audio energy and visual lip motion to catch out-of-sync deepfakes.
@@ -120,25 +120,28 @@ Both neural architectures were trained on **Google Colab** leveraging dedicated 
 
 ## 📊 Benchmark & Evaluation Results
 
-### Visual Face Detection on FaceForensics++ (Jai)
-Evaluated across official FaceForensics++ manipulation methods:
+> **Note on Evaluation Splits:** The baseline metrics below reflect the initial pilot validation split (20 test videos / 303 frames and 500 audio samples). Gunin and Jai's Colab notebooks scale this training to large partitions with augmentations to target $>88-92\%$ generalized AUC.
 
-| Manipulation Method | Num Test Videos | Video AUC | Video Accuracy |
-| :--- | :---: | :---: | :---: |
-| **Face2Face** | 2 | **1.000** | **91.7%** |
-| **NeuralTextures** | 2 | **1.000** | **91.7%** |
-| **Deepfakes** | 4 | **0.700** | **85.7%** |
-| **FaceSwap** | 2 | **0.750** | **83.3%** |
-| **Overall Dataset** | **20** | **0.830** | **80.0%** |
+### Visual Face Detection on FaceForensics++ (Jai)
+Evaluated across FaceForensics++ manipulation methods on the pilot evaluation set:
+
+| Manipulation Method | Num Test Videos | Video AUC | Video Accuracy | Frame Accuracy |
+| :--- | :---: | :---: | :---: | :---: |
+| **Face2Face** | 2 | **1.000** | **91.7%** | 88.5% |
+| **NeuralTextures** | 2 | **1.000** | **91.7%** | 89.1% |
+| **Deepfakes** | 4 | **0.700** | **85.7%** | 68.2% |
+| **FaceSwap** | 2 | **0.750** | **83.3%** | 71.4% |
+| **Overall Dataset** | **20** | **0.830** | **70.0%** (Video) | **65.7%** (303 frames) |
 
 ### Audio Voice Clone Detection on ASVspoof 2019 (Gunin)
 Evaluated on speech synthesis and voice conversion spoof attacks:
 
 | Metric | Score | Details |
 | :--- | :---: | :--- |
-| **ROC AUC** | **0.870** | Strong discrimination between bonafide and cloned speech |
-| **Accuracy** | **81.4%** | Evaluated on 4-second test waveforms |
-| **Equal Error Rate (EER)** | **22.2%** | Balanced false accept and false reject rate |
+| **ROC AUC** | **0.812 - 0.870** | Strong discrimination between bonafide human voice and synthetic clones |
+| **Accuracy** | **71.6% - 81.4%** | Evaluated on 4-second test waveforms (77.8% bonafide, 71.0% spoof) |
+| **Equal Error Rate (EER)** | **22.2% - 27.7%** | Balanced false accept and false reject rate across acoustic channels |
+
 
 ---
 
