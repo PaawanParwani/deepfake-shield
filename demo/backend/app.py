@@ -247,6 +247,57 @@ class LightweightAudioClassifier(nn.Module):
         return self.classifier(feat)
 
 
+class MelSpecAudioClassifier(nn.Module):
+    """Deep Mel-Spectrogram 2D Convolutional Network for ASVspoof Voice Clone Detection."""
+
+    def __init__(self, num_classes: int = 2) -> None:
+        super().__init__()
+        import torchaudio.transforms as T
+        self.mel_spec = T.MelSpectrogram(
+            sample_rate=16000,
+            n_fft=1024,
+            hop_length=256,
+            n_mels=80,
+            f_min=20,
+            f_max=8000,
+        )
+        self.to_db = T.AmplitudeToDB()
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        self.fc = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, num_classes),
+        )
+
+    def forward(self, wav: torch.Tensor) -> torch.Tensor:
+        if wav.dim() == 3:
+            wav = wav.squeeze(1)
+        elif wav.dim() == 1:
+            wav = wav.unsqueeze(0)
+        spec = self.to_db(self.mel_spec(wav)).unsqueeze(1)
+        mean = spec.mean(dim=(2, 3), keepdim=True)
+        std = spec.std(dim=(2, 3), keepdim=True) + 1e-6
+        norm_spec = (spec - mean) / std
+        feat = self.conv(norm_spec).flatten(1)
+        return self.fc(feat)
+
+
 def create_audio_classifier(num_classes: int = 2) -> Optional[Any]:
     """Construct recurrent audio classification model (CRNN-GRU).
 
@@ -336,8 +387,11 @@ def init_audio_model() -> None:
                 key.removeprefix("module."): value
                 for key, value in state_dict.items()
             }
-            declared_type = str(checkpoint.get("model_type", "")).lower()
-            if "rnn" in declared_type or any(key.startswith("rnn.") for key in state_dict):
+            declared_type = str(checkpoint.get("model_type", checkpoint.get("architecture", ""))).lower()
+            if "mel_spec" in declared_type or any(key.startswith("mel_spec.") or (key.startswith("conv.") and "rnn.weight_ih_l0" not in state_dict) for key in state_dict):
+                model = MelSpecAudioClassifier(num_classes=2)
+                models.audio_model_type = "mel_spectrogram_2d_cnn"
+            elif "rnn" in declared_type or any(key.startswith("rnn.") for key in state_dict):
                 model = RNNAudioClassifier(num_classes=2)
                 models.audio_model_type = "recurrent_rnn_gru"
             elif any(key.startswith("features.") for key in state_dict):
