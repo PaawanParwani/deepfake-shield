@@ -196,7 +196,7 @@ def run_extraction(
         for root, _, files in os.walk(out_path):
             for file in files:
                 full_path = Path(root) / file
-                arcname = full_path.relative_to(out_path.parent.parent)
+                arcname = str(full_path).replace("\\", "/")
                 z.write(full_path, arcname)
                 total_files += 1
 

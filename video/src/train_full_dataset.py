@@ -181,8 +181,10 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
         crop_zip = Path("deploy/video_faceforensics_crops.zip")
         crops_dir = Path("video/data/crops")
         if crop_zip.exists():
-            import zipfile
-            logger.info("Extracting authentic FaceForensics++ crops from %s...", crop_zip)
+            import zipfile, shutil
+            logger.info("Cleaning stale crops and extracting authentic FaceForensics++ crops from %s...", crop_zip)
+            if crops_dir.exists():
+                shutil.rmtree(crops_dir)
             with zipfile.ZipFile(crop_zip, "r") as z:
                 z.extractall(".")
             logger.info("Extracted FaceForensics++ face crops successfully.")
