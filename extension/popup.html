@@ -97,6 +97,16 @@
           <option value="98.5">⚡ High-Efficiency Real-Time (Fast Latency)</option>
         </select>
       </div>
+    <!-- Backend Endpoint Configuration -->
+    <div class="card settings-card" style="padding: 10px 14px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <label style="font-size: 0.78rem; font-weight: 600; color: #94a3b8;">AI Backend Endpoint</label>
+        <span id="endpointStatus" style="font-size: 0.72rem; color: #10b981; font-weight: 600;">Local PC Active</span>
+      </div>
+      <div style="display: flex; gap: 6px;">
+        <input type="text" id="popupBackendInput" value="http://localhost:8000" style="flex: 1; background: #0f172a; border: 1px solid #334155; color: #f8fafc; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem;">
+        <button id="btnSavePopupBackend" style="background: #4f46e5; border: none; color: white; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; cursor: pointer;">Save</button>
+      </div>
     </div>
 
     <!-- Telemetry -->

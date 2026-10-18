@@ -1038,7 +1038,7 @@
     <!-- Backend URL Configuration Bar -->
     <div class="config-bar" id="configBar">
       <label for="backendUrlInput"><strong>API Endpoint:</strong></label>
-      <input type="text" id="backendUrlInput" value="https://deepfake-shield-vyaq.onrender.com" placeholder="e.g. https://deepfake-shield-vyaq.onrender.com">
+      <input type="text" id="backendUrlInput" value="http://localhost:8000" placeholder="e.g. http://localhost:8000">
       <button type="button" id="btnSaveConfig">Save &amp; Reconnect</button>
     </div>
 
@@ -1389,14 +1389,19 @@
       const ALLOWED_AUDIO = [".wav", ".flac", ".mp3"];
       const ALLOWED_VIDEO = [".mp4", ".avi", ".mov"];
 
-      // Production Cloud Backend (Single unified endpoint)
-      const LIVE_BACKEND_URL = "https://deepfake-shield-vyaq.onrender.com";
+      // Default to Local PC Server (http://localhost:8000)
+      const LOCAL_BACKEND_URL = "http://localhost:8000";
       let storedUrl = localStorage.getItem("hv_backend_url");
+      if (storedUrl && (storedUrl.includes("onrender.com") || storedUrl.includes("deepfake-shield-backend"))) {
+        // Automatically purge stale Render URL so local PC server is used immediately
+        storedUrl = null;
+        localStorage.removeItem("hv_backend_url");
+      }
       if (window.location.protocol.startsWith("http") && !window.location.hostname.includes("github.io") && !window.location.hostname.includes("pages.dev")) {
         // If served directly from local PC or web server, use same origin
         storedUrl = window.location.origin;
-      } else if (!storedUrl || storedUrl.includes("deepfake-shield-backend")) {
-        storedUrl = "http://localhost:8000";
+      } else if (!storedUrl) {
+        storedUrl = LOCAL_BACKEND_URL;
         localStorage.setItem("hv_backend_url", storedUrl);
       }
       let backendUrl = storedUrl.replace(/\/+$/, "");

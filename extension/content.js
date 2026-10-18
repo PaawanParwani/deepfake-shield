@@ -9,7 +9,7 @@
 
   let config = {
     enabled: true,
-    backendUrl: "https://deepfake-shield-vyaq.onrender.com",
+    backendUrl: "http://localhost:8000",
     scanIntervalMs: 220,        // Rapid 0.22s polling for instant discovery
     scanIntervalLockedMs: 600,  // Continuous 0.6s verification when locked
     sensitivityThreshold: 0.88,
@@ -61,14 +61,26 @@
     chrome.storage.local.get(
       ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold", "debug"],
       (stored) => {
-        if (stored) config = { ...config, ...stored };
+        if (stored) {
+          if (stored.backendUrl && (stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend"))) {
+            stored.backendUrl = "http://localhost:8000";
+            chrome.storage.local.set({ backendUrl: "http://localhost:8000" });
+          }
+          config = { ...config, ...stored };
+        }
         updateDockPill();
       }
     );
 
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local") {
-        for (let k in changes) config[k] = changes[k].newValue;
+        for (let k in changes) {
+          if (k === "backendUrl" && changes[k].newValue && (changes[k].newValue.includes("onrender.com") || changes[k].newValue.includes("deepfake-shield-backend"))) {
+            config.backendUrl = "http://localhost:8000";
+          } else {
+            config[k] = changes[k].newValue;
+          }
+        }
         updateDockPill();
       }
     });
@@ -294,9 +306,40 @@
 
     inFlight = true;
     const reqStart = performance.now();
+
+    function handleSuccess(data) {
+      const clientLatency = Math.round(performance.now() - reqStart);
+      try {
+        processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
+      } catch (procErr) {
+        console.error("[Deepfake Shield] UI processing exception:", procErr);
+      }
+    }
+
+    // Prefer extension service worker message proxy to bypass Google Meet meetsw.js & CSP
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage(
+        {
+          type: "PREDICT_FRAME",
+          payload: { backendUrl: config.backendUrl, image_base64: capture.dataUrl }
+        },
+        (response) => {
+          inFlight = false;
+          if (chrome.runtime.lastError || !response || !response.success) {
+            const err = (response && response.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message);
+            debugLog("Background proxy inference error:", err);
+            renderOffline();
+            return;
+          }
+          handleSuccess(response.data);
+        }
+      );
+      return;
+    }
+
+    // Direct fetch fallback
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 9000);
-
     try {
       const resp = await fetch(`${config.backendUrl}/predict/frame`, {
         method: "POST",
@@ -308,12 +351,7 @@
 
       if (resp.ok) {
         const data = await resp.json();
-        const clientLatency = Math.round(performance.now() - reqStart);
-        try {
-          processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
-        } catch (procErr) {
-          console.error("[Deepfake Shield] UI processing exception:", procErr);
-        }
+        handleSuccess(data);
       } else {
         debugLog(`Server responded with HTTP ${resp.status}`);
       }

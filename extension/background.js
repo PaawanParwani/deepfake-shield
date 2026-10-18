@@ -1,18 +1,38 @@
 // Service Worker for Human Verification Deepfake Shield Extension
 
+function sanitizeBackendUrl(url) {
+  if (!url || url.includes("onrender.com") || url.includes("deepfake-shield-backend")) {
+    return "http://localhost:8000";
+  }
+  return url.replace(/\/+$/, "");
+}
+
+// Ensure local PC backend is configured on install and startup
+function ensureConfig() {
+  chrome.storage.local.get(["backendUrl", "enabled", "scanIntervalMs", "sensitivityThreshold"], (data) => {
+    const currentUrl = data ? data.backendUrl : null;
+    const cleanUrl = sanitizeBackendUrl(currentUrl);
+    chrome.storage.local.set({
+      enabled: data && data.enabled !== undefined ? data.enabled : true,
+      backendUrl: cleanUrl,
+      scanIntervalMs: data && data.scanIntervalMs ? data.scanIntervalMs : 1500,
+      sensitivityThreshold: data && data.sensitivityThreshold ? data.sensitivityThreshold : 0.55,
+      alertNotifications: true,
+      lastDetections: []
+    });
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Human Verification] Extension installed and active.");
-  chrome.storage.local.set({
-    enabled: true,
-    backendUrl: "https://deepfake-shield-vyaq.onrender.com",
-    scanIntervalMs: 1500,
-    sensitivityThreshold: 0.50,
-    alertNotifications: true,
-    lastDetections: []
-  });
+  ensureConfig();
 });
 
-// Listen for updates from content script
+chrome.runtime.onStartup.addListener(() => {
+  ensureConfig();
+});
+
+// Listen for updates and proxy requests from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "DETECTION_UPDATE") {
     const { verdict, confidence, p_fake } = message.payload;
@@ -29,6 +49,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     sendResponse({ status: "acknowledged" });
+    return true;
   }
+
+  // Native background fetch proxy: Bypasses Google Meet meetsw.js service worker and CSP
+  if (message.type === "PREDICT_FRAME") {
+    const { backendUrl, image_base64 } = message.payload || {};
+    const targetUrl = sanitizeBackendUrl(backendUrl);
+
+    fetch(`${targetUrl}/predict/frame`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_base64 })
+    })
+      .then(async (resp) => {
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        sendResponse({ success: true, data });
+      })
+      .catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+
+    return true; // Keep message channel open for async response
+  }
+
+  // Backend Health check proxy
+  if (message.type === "CHECK_HEALTH") {
+    const targetUrl = sanitizeBackendUrl(message.payload ? message.payload.backendUrl : null);
+    fetch(`${targetUrl}/health`, { method: "GET" })
+      .then(async (resp) => {
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        sendResponse({ success: true, data });
+      })
+      .catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
   return true;
 });

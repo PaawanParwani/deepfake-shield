@@ -1,6 +1,6 @@
 // Popup Script for Human Verification Extension
 document.addEventListener("DOMContentLoaded", () => {
-  let backendUrl = "https://deepfake-shield-vyaq.onrender.com";
+  let backendUrl = "http://localhost:8000";
 
   // Elements
   const backendStatusPill = document.getElementById("backendStatusPill");
@@ -8,6 +8,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const masterToggle = document.getElementById("masterToggle");
   const precisionModeSelect = document.getElementById("precisionModeSelect");
   const thresholdVal = document.getElementById("thresholdVal");
+  const popupBackendInput = document.getElementById("popupBackendInput");
+  const btnSavePopupBackend = document.getElementById("btnSavePopupBackend");
+  const endpointStatus = document.getElementById("endpointStatus");
 
   // Permission Elements
   const permissionCard = document.getElementById("permissionCard");
@@ -40,24 +43,49 @@ document.addEventListener("DOMContentLoaded", () => {
       if (resp.ok) {
         backendStatusPill.className = "status-pill online";
         backendStatusText.textContent = "Online";
+        if (endpointStatus) {
+          endpointStatus.textContent = backendUrl.includes("localhost") ? "Local PC Active" : "Online";
+          endpointStatus.style.color = "#10b981";
+        }
       } else {
         throw new Error();
       }
     } catch {
       backendStatusPill.className = "status-pill offline";
       backendStatusText.textContent = "Offline";
+      if (endpointStatus) {
+        endpointStatus.textContent = "Connection Failed";
+        endpointStatus.style.color = "#ef4444";
+      }
     }
   }
 
   if (chrome && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(["backendUrl"], (res) => {
-      if (res && res.backendUrl) {
-        backendUrl = res.backendUrl;
+      if (res && res.backendUrl && !res.backendUrl.includes("onrender.com") && !res.backendUrl.includes("deepfake-shield-backend")) {
+        backendUrl = res.backendUrl.replace(/\/+$/, "");
+      } else {
+        backendUrl = "http://localhost:8000";
+        chrome.storage.local.set({ backendUrl: "http://localhost:8000" });
       }
+      if (popupBackendInput) popupBackendInput.value = backendUrl;
       checkBackendHealth();
     });
   } else {
+    if (popupBackendInput) popupBackendInput.value = backendUrl;
     checkBackendHealth();
+  }
+
+  if (btnSavePopupBackend && popupBackendInput) {
+    btnSavePopupBackend.addEventListener("click", () => {
+      let val = popupBackendInput.value.trim().replace(/\/+$/, "");
+      if (!val) val = "http://localhost:8000";
+      backendUrl = val;
+      if (chrome && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ backendUrl });
+      }
+      checkBackendHealth();
+    });
   }
 
   // 2. Check Permissions State (Fast storage check, no blocking query calls)
