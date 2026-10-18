@@ -72,8 +72,13 @@ class FaceForensicsFullDataset(Dataset):
         self._prepare_frames()
 
     def _prepare_frames(self) -> None:
-        logger.info("Extracting & caching faces from %d videos (%d frames/video)...", len(self.samples), self.frames_per_video)
-        for vid_path, label, v_id, method in self.samples:
+        logger.info("Preparing face frames for %d items...", len(self.samples))
+        for item_path, label, v_id, method in self.samples:
+            # If item is already an extracted face image, use it directly
+            if item_path.lower().endswith((".jpg", ".png", ".jpeg")):
+                self.frame_items.append((item_path, label, v_id, method))
+                continue
+
             sub_dir = self.cache_dir / ("real" if label == 0 else "fake") / v_id
             sub_dir.mkdir(parents=True, exist_ok=True)
 
@@ -83,7 +88,7 @@ class FaceForensicsFullDataset(Dataset):
                     self.frame_items.append((cp, label, v_id, method))
                 continue
 
-            cap = cv2.VideoCapture(vid_path)
+            cap = cv2.VideoCapture(item_path)
             if not cap.isOpened():
                 continue
 
@@ -125,7 +130,7 @@ class FaceForensicsFullDataset(Dataset):
                 if face_crop is None or face_crop.size == 0:
                     head_size = int(min(h, w) * 0.70)
                     cx = w // 2
-                    cy = int(h * 0.45) # heads are typically centered vertically slightly above midpoint
+                    cy = int(h * 0.45)
                     x1 = max(0, cx - head_size // 2)
                     y1 = max(0, cy - head_size // 2)
                     x2 = min(w, cx + head_size // 2)
@@ -141,7 +146,6 @@ class FaceForensicsFullDataset(Dataset):
 
             cap.release()
 
-
         logger.info("Total prepared face frames: %d", len(self.frame_items))
 
     def __len__(self) -> int:
@@ -156,11 +160,10 @@ class FaceForensicsFullDataset(Dataset):
 
 
 def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[List, List]:
-    """Discover and balance FaceForensics++ videos across manipulation methods."""
+    """Discover FaceForensics++ videos, with automatic fallback to bundled face crops."""
     base_path = Path(base_dir)
     original_vids = sorted(glob.glob(str(base_path / "original" / "*.mp4")))
     if not original_vids:
-        # Check subdirectories
         original_vids = sorted(glob.glob(str(base_path / "original" / "**" / "*.mp4"), recursive=True))
 
     manip_methods = ["Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures", "FaceShifter", "DeepFakeDetection"]
@@ -172,14 +175,37 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
         if vids:
             fake_vids_by_method[m] = vids
 
+    # Fallback to authentic FaceForensics++ face crops if raw .mp4 videos are not present (e.g. in Colab)
+    if not original_vids and not fake_vids_by_method:
+        logger.info("No raw .mp4 videos found in '%s'. Checking for authentic FaceForensics++ face crops bundle...", base_dir)
+        crop_zip = Path("deploy/video_faceforensics_crops.zip")
+        crops_dir = Path("video/data/crops")
+        if not crops_dir.exists() and crop_zip.exists():
+            import zipfile
+            logger.info("Unpacking %s...", crop_zip)
+            with zipfile.ZipFile(crop_zip, "r") as z:
+                z.extractall(".")
+            logger.info("Extracted FaceForensics++ face crops successfully.")
+
+        train_real = sorted(glob.glob("video/data/crops/train/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/real/*.jpg"))
+        train_fake = sorted(glob.glob("video/data/crops/train/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/train/fake/*.jpg"))
+        val_real = sorted(glob.glob("video/data/crops/val/real/**/*.jpg", recursive=True) + glob.glob("video/data/crops/val/real/*.jpg"))
+        val_fake = sorted(glob.glob("video/data/crops/val/fake/**/*.jpg", recursive=True) + glob.glob("video/data/crops/val/fake/*.jpg"))
+
+        if train_real or train_fake:
+            logger.info("Loaded authentic face crops: Train: %d Real, %d Fake | Val: %d Real, %d Fake", len(train_real), len(train_fake), len(val_real), len(val_fake))
+            train_samples = [(p, 0, Path(p).parent.name, "real") for p in train_real] + [(p, 1, Path(p).parent.name, "manipulated") for p in train_fake]
+            val_samples = [(p, 0, Path(p).parent.name, "real") for p in val_real] + [(p, 1, Path(p).parent.name, "manipulated") for p in val_fake]
+            random.seed(42)
+            random.shuffle(train_samples)
+            return train_samples, val_samples
+
     logger.info("Found %d original videos and %d manipulation methods: %s", len(original_vids), len(fake_vids_by_method), list(fake_vids_by_method.keys()))
 
     all_samples: List[Tuple[str, int, str, str]] = []
-    # Real samples
-    for p in original_vids[:num_per_method * len(fake_vids_by_method)]:
+    for p in original_vids[:num_per_method * max(1, len(fake_vids_by_method))]:
         all_samples.append((p, 0, Path(p).stem, "original"))
 
-    # Fake samples (balanced per method)
     for m, vids in fake_vids_by_method.items():
         for p in vids[:num_per_method]:
             all_samples.append((p, 1, Path(p).stem, m))
@@ -193,6 +219,7 @@ def collect_video_samples(base_dir: str, num_per_method: int = 150) -> Tuple[Lis
 
     logger.info("Sample split: %d train videos, %d validation videos", len(train_samples), len(val_samples))
     return train_samples, val_samples
+
 
 
 def train(args: argparse.Namespace) -> None:
