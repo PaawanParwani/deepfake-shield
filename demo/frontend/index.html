@@ -1393,11 +1393,11 @@
       const LIVE_BACKEND_URL = "https://deepfake-shield-vyaq.onrender.com";
       let storedUrl = localStorage.getItem("hv_backend_url");
       if (window.location.protocol.startsWith("http") && !window.location.hostname.includes("github.io") && !window.location.hostname.includes("pages.dev")) {
-        // If served directly from Render or FastAPI server, automatically use same origin
+        // If served directly from local PC or web server, use same origin
         storedUrl = window.location.origin;
-      } else if (!storedUrl || storedUrl.includes("localhost") || storedUrl.includes("127.0.0.1") || storedUrl.includes("deepfake-shield-backend")) {
-        storedUrl = LIVE_BACKEND_URL;
-        localStorage.setItem("hv_backend_url", LIVE_BACKEND_URL);
+      } else if (!storedUrl || storedUrl.includes("deepfake-shield-backend")) {
+        storedUrl = "http://localhost:8000";
+        localStorage.setItem("hv_backend_url", storedUrl);
       }
       let backendUrl = storedUrl.replace(/\/+$/, "");
       let audioFile = null;
