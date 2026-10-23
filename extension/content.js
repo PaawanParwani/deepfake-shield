@@ -302,12 +302,28 @@
     }
 
     const capture = captureCompactFrame(video);
-    if (!capture) return;
+    if (!capture) {
+      if (hudBadge && hudBadge.querySelector("#hv-badge-score") && hudBadge.querySelector("#hv-badge-score").textContent.includes("Initializing")) {
+        hudBadge.querySelector("#hv-badge-score").textContent = "Scanning camera...";
+      }
+      return;
+    }
 
     inFlight = true;
     const reqStart = performance.now();
 
+    // Safety watchdog: ensure inFlight NEVER hangs permanently
+    const watchdogId = setTimeout(() => {
+      if (inFlight) {
+        debugLog("Inference watchdog: request timed out, resetting inFlight");
+        inFlight = false;
+        renderOffline();
+      }
+    }, 7000);
+
     function handleSuccess(data) {
+      clearTimeout(watchdogId);
+      inFlight = false;
       const clientLatency = Math.round(performance.now() - reqStart);
       try {
         processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
@@ -318,28 +334,35 @@
 
     // Prefer extension service worker message proxy to bypass Google Meet meetsw.js & CSP
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage(
-        {
-          type: "PREDICT_FRAME",
-          payload: { backendUrl: config.backendUrl, image_base64: capture.dataUrl }
-        },
-        (response) => {
-          inFlight = false;
-          if (chrome.runtime.lastError || !response || !response.success) {
-            const err = (response && response.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message);
-            debugLog("Background proxy inference error:", err);
-            renderOffline();
-            return;
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: "PREDICT_FRAME",
+            payload: { backendUrl: config.backendUrl, image_base64: capture.dataUrl }
+          },
+          (response) => {
+            clearTimeout(watchdogId);
+            inFlight = false;
+            if (chrome.runtime.lastError || !response || !response.success) {
+              const err = (response && response.error) || (chrome.runtime.lastError && chrome.runtime.lastError.message);
+              debugLog("Background proxy inference error:", err);
+              renderOffline();
+              return;
+            }
+            handleSuccess(response.data);
           }
-          handleSuccess(response.data);
-        }
-      );
-      return;
+        );
+        return;
+      } catch (sendErr) {
+        clearTimeout(watchdogId);
+        inFlight = false;
+        debugLog("chrome.runtime.sendMessage sync error:", sendErr);
+      }
     }
 
     // Direct fetch fallback
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000);
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
     try {
       const resp = await fetch(`${config.backendUrl}/predict/frame`, {
         method: "POST",
@@ -348,15 +371,18 @@
         signal: controller.signal
       });
       clearTimeout(timeoutId);
+      clearTimeout(watchdogId);
 
       if (resp.ok) {
         const data = await resp.json();
         handleSuccess(data);
       } else {
         debugLog(`Server responded with HTTP ${resp.status}`);
+        renderOffline();
       }
     } catch (err) {
       clearTimeout(timeoutId);
+      clearTimeout(watchdogId);
       debugLog("Inference fetch error:", err);
       renderOffline();
     } finally {
@@ -374,7 +400,7 @@
         <div class="hv-pulse-dot"></div>
         <div class="hv-hud-text">
           <span id="hv-badge-title">PROTECTED</span>
-          <span class="hv-hud-score" id="hv-badge-score">Initializing...</span>
+          <span class="hv-hud-score" id="hv-badge-score">Scanning face...</span>
         </div>
       `;
       document.body.appendChild(hudBadge);

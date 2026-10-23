@@ -56,13 +56,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "PREDICT_FRAME") {
     const { backendUrl, image_base64 } = message.payload || {};
     const targetUrl = sanitizeBackendUrl(backendUrl);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6500);
 
     fetch(`${targetUrl}/predict/frame`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_base64 })
+      body: JSON.stringify({ image_base64 }),
+      signal: controller.signal
     })
       .then(async (resp) => {
+        clearTimeout(timeoutId);
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`);
         }
@@ -70,6 +74,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true, data });
       })
       .catch((err) => {
+        clearTimeout(timeoutId);
         sendResponse({ success: false, error: err.message });
       });
 
