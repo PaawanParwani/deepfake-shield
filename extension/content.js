@@ -10,8 +10,8 @@
   let config = {
     enabled: true,
     backendUrl: "http://localhost:8000",
-    scanIntervalMs: 220,        // Rapid 0.22s polling for instant discovery
-    scanIntervalLockedMs: 600,  // Continuous 0.6s verification when locked
+    scanIntervalMs: 200,        // Rapid 0.20s polling for instant discovery
+    scanIntervalLockedMs: 240,  // Continuous 0.24s verification when locked
     sensitivityThreshold: 0.88,
     debug: true
   };
@@ -738,15 +738,15 @@
         const curPX = Math.round(face.templateNormPos.cx * TRACK_W);
         const curPY = Math.round(face.templateNormPos.cy * TRACK_H);
 
-        // Search +/- 10px horizontally, +/- 8px vertically (corresponds to ~80px on 1080p screen)
+        // Search +/- 18px horizontally, +/- 14px vertically for high-speed head movement
         let bestSAD = Infinity;
         let bestX = curPX;
         let bestY = curPY;
 
-        for (let dy = -8; dy <= 8; dy += 2) {
+        for (let dy = -14; dy <= 14; dy += 2) {
           const sy = curPY + dy - 8;
           if (sy < 0 || sy + 16 > TRACK_H) continue;
-          for (let dx = -10; dx <= 10; dx += 2) {
+          for (let dx = -18; dx <= 18; dx += 2) {
             const sx = curPX + dx - 8;
             if (sx < 0 || sx + 16 > TRACK_W) continue;
 
@@ -769,8 +769,8 @@
           }
         }
 
-        // 64 sampled pixels: threshold < 35 avg diff per pixel indicates valid face track
-        if (bestSAD < 64 * 35) {
+        // 64 sampled pixels: threshold < 42 avg diff per pixel indicates valid face track
+        if (bestSAD < 64 * 42) {
           const newNormCx = bestX / TRACK_W;
           const newNormCy = bestY / TRACK_H;
           face.templateNormPos.cx = newNormCx;
@@ -788,7 +788,7 @@
     } catch {}
   }
 
-  // 60 FPS Instant Snap Animation Loop
+  // 60 FPS Responsive Gliding Animation Loop
   function animationLoop() {
     if (config.enabled && activeVideo && document.body.contains(activeVideo)) {
       updateHUDBadgePosition();
@@ -800,8 +800,8 @@
         const dw = face.target.w - face.current.w;
         const dh = face.target.h - face.current.h;
 
-        // Snappy 0.85 lerp factor on motion for instant 1-frame snap
-        const lerpFactor = 0.85;
+        // Responsive 0.52 lerp factor for natural, zero-jitter gliding
+        const lerpFactor = 0.52;
 
         face.current.x += dx * lerpFactor;
         face.current.y += dy * lerpFactor;

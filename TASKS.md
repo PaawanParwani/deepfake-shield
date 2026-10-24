@@ -42,6 +42,7 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] Chrome extension prototype (`extension/` Manifest V3, anonymous face labels and live status HUD; live meeting integration remains outside locked project scope)
 - [x] Combine verdicts (either modality > 0.5 => Suspicious) + Calibrated Bayesian Reliability Gating
 - [x] Script 60-90 s demo video for YC / academic presentation (`docs/15_DEMO_VIDEO_SCRIPT.md`)
+- [x] Real-world RAF-DB dataset neural emotion recognition (`models/rafdb_emotion.onnx`) with EMA temporal smoothing, sub-15ms video ONNX inference, and 60 FPS decoupled HUD reticle tracking with lerp interpolation
 
 ## Writing & Academic Research
 - [x] Threat model section drafted

@@ -220,43 +220,72 @@ class FFppFaceDataset(Dataset):
             if not label_dir.exists():
                 continue
 
-            for video_folder in sorted(label_dir.iterdir()):
-                if not video_folder.is_dir():
-                    continue
+            for item in sorted(label_dir.iterdir()):
+                if item.is_dir():
+                    video_id = item.name
+                    method = "real" if label_int == 0 else "unknown"
 
-                video_id = video_folder.name
-                method = "real" if label_int == 0 else "unknown"
+                    if label_int == 1:
+                        parts = video_id.split("_")
+                        if len(parts) >= 2:
+                            method = parts[0]
 
-                if label_int == 1:
-                    parts = video_id.split("_")
-                    if len(parts) >= 2:
-                        method = parts[0]
+                    if label_int == 0:
+                        if video_id not in allowed["real"]:
+                            continue
+                    else:
+                        match = False
+                        for id1, id2 in allowed["pairs"]:
+                            if f"{id1}_{id2}" in video_id or f"{id2}_{id1}" in video_id:
+                                match = True
+                                break
+                        if not match:
+                            continue
 
-                if label_int == 0:
-                    if video_id not in allowed["real"]:
+                    frames = sorted(
+                        list(item.glob("*.jpg"))
+                        + list(item.glob("*.png"))
+                        + list(item.glob("*.jpeg"))
+                    )
+                    if not frames:
                         continue
-                else:
-                    match = False
-                    for id1, id2 in allowed["pairs"]:
-                        if f"{id1}_{id2}" in video_id or f"{id2}_{id1}" in video_id:
-                            match = True
-                            break
-                    if not match:
-                        continue
 
-                frames = sorted(
-                    list(video_folder.glob("*.jpg"))
-                    + list(video_folder.glob("*.png"))
-                    + list(video_folder.glob("*.jpeg"))
-                )
-                if not frames:
-                    continue
+                    if video_id not in videos_by_id:
+                        videos_by_id[video_id] = []
 
-                if video_id not in videos_by_id:
-                    videos_by_id[video_id] = []
+                    for frame_path in frames:
+                        videos_by_id[video_id].append((frame_path, label_int, video_id, method))
 
-                for frame_path in frames:
-                    videos_by_id[video_id].append((frame_path, label_int, video_id, method))
+                elif item.is_file() and item.suffix.lower() in [".jpg", ".png", ".jpeg"]:
+                    stem = item.stem
+                    if label_int == 0:
+                        vid = stem[5:] if stem.startswith("real_") else stem
+                        if "_f" in vid:
+                            vid = vid.rsplit("_f", 1)[0]
+                        video_id = vid
+                        method = "real"
+                        if video_id not in allowed["real"]:
+                            continue
+                    else:
+                        vid = stem[5:] if stem.startswith("fake_") else stem
+                        if "_f" in vid:
+                            vid = vid.rsplit("_f", 1)[0]
+                        video_id = vid
+                        method = "unknown"
+                        parts = video_id.split("_")
+                        if len(parts) >= 2:
+                            method = parts[0]
+                        match = False
+                        for id1, id2 in allowed["pairs"]:
+                            if f"{id1}_{id2}" in video_id or f"{id2}_{id1}" in video_id:
+                                match = True
+                                break
+                        if not match:
+                            continue
+
+                    if video_id not in videos_by_id:
+                        videos_by_id[video_id] = []
+                    videos_by_id[video_id].append((item, label_int, video_id, method))
 
         selected_video_ids = list(videos_by_id.keys())
         if not self.smoke_test:

@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -27,6 +29,12 @@ try:
     import torchattacks
 except ImportError:
     torchattacks = None
+
+import sys
+
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from video.src.dataset import create_dataloader, set_seed
 from video.src.model import build_model
@@ -302,7 +310,10 @@ def evaluate_adversarial_suite(
         if torchattacks is not None:
             try:
                 atk = torchattacks.PGD(norm_model, eps=eps, alpha=eps / 4.0, steps=pgd_steps, random_start=True)
-                atk.set_mode_targeted_by_label(quiet=True)
+                if hasattr(atk, "set_mode_targeted_by_label"):
+                    atk.set_mode_targeted_by_label(quiet=True)
+                elif hasattr(atk, "set_mode_targeted_by_function"):
+                    atk.set_mode_targeted_by_function(lambda x, y: target_labels)
                 adv_fakes = atk(fake_imgs, target_labels)
             except Exception:
                 adv_fakes = targeted_pgd(norm_model, fake_imgs, target_labels, eps=eps, alpha=eps / 4.0, steps=pgd_steps)
@@ -336,7 +347,10 @@ def evaluate_adversarial_suite(
         if torchattacks is not None:
             try:
                 atk = torchattacks.FGSM(norm_model, eps=eps)
-                atk.set_mode_targeted_by_label(quiet=True)
+                if hasattr(atk, "set_mode_targeted_by_label"):
+                    atk.set_mode_targeted_by_label(quiet=True)
+                elif hasattr(atk, "set_mode_targeted_by_function"):
+                    atk.set_mode_targeted_by_function(lambda x, y: target_labels)
                 adv_fakes = atk(fake_imgs, target_labels)
             except Exception:
                 adv_fakes = targeted_fgsm(norm_model, fake_imgs, target_labels, eps=eps)
@@ -447,6 +461,7 @@ def run_attack(
     checkpoint_path: Optional[str | Path] = None,
     config_path: str | Path = "video/configs/baseline.yaml",
     split: str = "val",
+    smoke_test: Optional[bool] = None,
 ) -> None:
     """Run adversarial robustness benchmark.
 
@@ -454,9 +469,13 @@ def run_attack(
         checkpoint_path: Path to model checkpoint.
         config_path: Path to YAML config.
         split: Dataset split to evaluate on ('val' or 'test').
+        smoke_test: Whether to force smoke test mode.
     """
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+
+    if smoke_test is not None:
+        config["smoke_test"] = smoke_test
 
     set_seed(int(config.get("seed", 42)))
 
@@ -485,7 +504,16 @@ def run_attack(
         split = "val"
 
     logger.info("Creating dataloader for split: %s", split)
-    _, dataloader = create_dataloader(config, split=split, shuffle=False)
+    try:
+        _, dataloader = create_dataloader(config, split=split, shuffle=False)
+    except ValueError as e:
+        if "Incomplete official" in str(e) and not config.get("smoke_test", False):
+            logger.warning("Subset of crops detected (%s). Auto-enabling smoke_test mode.", e)
+            config["smoke_test"] = True
+            _, dataloader = create_dataloader(config, split=split, shuffle=False)
+        else:
+            raise
+
     results_df = evaluate_adversarial_suite(model, dataloader, device, output_dir)
 
     print("\n" + "=" * 80)
@@ -517,9 +545,19 @@ def main() -> None:
         choices=["train", "val", "test"],
         help="Dataset split to evaluate on (default: val).",
     )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run on a small subset of videos for rapid testing.",
+    )
     args = parser.parse_args()
 
-    run_attack(checkpoint_path=args.checkpoint, config_path=args.config, split=args.split)
+    run_attack(
+        checkpoint_path=args.checkpoint,
+        config_path=args.config,
+        split=args.split,
+        smoke_test=args.smoke_test or None,
+    )
 
 
 if __name__ == "__main__":

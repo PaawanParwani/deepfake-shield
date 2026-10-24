@@ -182,16 +182,16 @@ def run_all_verification():
     all_passed = True
     for title, test_fn in phases:
         passed, msg = test_fn()
-        status_tag = "✅ PASS" if passed else "❌ FAIL"
+        status_tag = "[PASS]" if passed else "[FAIL]"
         if not passed:
             all_passed = False
         print(f"{status_tag} | {title}\n        -> {msg}\n")
 
     print("=" * 75)
     if all_passed:
-        print("🎉 ALL PHASES VERIFIED 100% OPERATIONAL AND READY FOR SUBMISSION!")
+        print("[SUCCESS] ALL PHASES VERIFIED 100% OPERATIONAL AND READY FOR SUBMISSION!")
     else:
-        print("⚠️  Some tests reported errors. Check logs above.")
+        print("[WARNING] Some tests reported errors. Check logs above.")
     print("=" * 75 + "\n")
 
 

@@ -12,15 +12,22 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import sys
+from pathlib import Path
 from PIL import Image
 from facenet_pytorch import MTCNN
-from demo.backend.app import create_video_classifier
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from video.src.continual_learning import ElasticWeightConsolidation
+from video.src.model import DeepfakeClassifier
 
 def train_robust_model():
     print("[1/5] Initializing architecture and loading baseline weights...")
     device = torch.device("cpu")
-    model = create_video_classifier(num_classes=2)
+    model = DeepfakeClassifier(model_name="efficientnet_b0", pretrained=False, num_classes=2)
 
     ckpt_path = "video/outputs/best_model.pt"
     if os.path.exists(ckpt_path):
@@ -49,11 +56,13 @@ def train_robust_model():
     real_images = []
     fake_images = []
 
-    # 1. Existing FF++ crops
-    for f in glob.glob("video/data/crops/train/real/*/*.png") + glob.glob("video/data/crops/train/real/*/*.jpg"):
-        real_images.append(f)
-    for f in glob.glob("video/data/crops/train/fake/*/*.png") + glob.glob("video/data/crops/train/fake/*/*.jpg"):
-        fake_images.append(f)
+    # 1. Existing FF++ crops (supports both subdirectory and flat crop formats)
+    for ext in ("*.png", "*.jpg", "*/*.png", "*/*.jpg"):
+        real_images.extend(glob.glob(f"video/data/crops/train/real/{ext}"))
+        fake_images.extend(glob.glob(f"video/data/crops/train/fake/{ext}"))
+
+    real_images = sorted(list(set(real_images)))
+    fake_images = sorted(list(set(fake_images)))
 
     print(f"Found {len(real_images)} FF++ real crops, {len(fake_images)} FF++ fake crops.")
 
@@ -155,6 +164,10 @@ def train_robust_model():
             X_train.append(preprocess(rgb))
             y_train.append(1)
 
+    if not X_train:
+        print("Warning: No training crops found in video/data/crops/train. Skipping fine-tuning.")
+        return
+
     X_train = np.stack(X_train, axis=0)
     y_train = np.array(y_train, dtype=np.int64)
 
@@ -207,20 +220,26 @@ def train_robust_model():
         acc = (correct / total) * 100.0
         print(f"  Epoch {epoch + 1}/5: Loss = {epoch_loss / total:.4f}, Accuracy = {acc:.2f}%")
 
-    # Evaluate on user chin-resting face
-    print("[5/5] Evaluating fine-tuned model on user's chin-resting webcam sample...")
+    # Evaluate on sample face
+    print("[5/5] Evaluating fine-tuned model on validation sample...")
     model.eval()
-    img_chin = cv2.imread(r"C:\Users\PC\.gemini\antigravity\brain\dbe2d6ae-abb6-4e2b-a44b-45a94b01095e\.user_uploaded\media_1792210355289_41edee73.png")
-    rgb_chin = cv2.cvtColor(img_chin, cv2.COLOR_BGR2RGB)
-    boxes, _ = mtcnn.detect(rgb_chin)
-    b = [int(v) for v in boxes[0]]
-    crop_chin = rgb_chin[b[1]:b[3], b[0]:b[2]]
+    sample_path = Path("demo_samples/real_face.jpg")
+    chin_path = Path(r"C:\Users\PC\.gemini\antigravity\brain\dbe2d6ae-abb6-4e2b-a44b-45a94b01095e\.user_uploaded\media_1792210355289_41edee73.png")
+    eval_target = chin_path if chin_path.is_file() else sample_path
 
-    with torch.no_grad():
-        t = torch.from_numpy(np.expand_dims(preprocess(crop_chin), 0)).float().to(device)
-        probs = torch.softmax(model(t), dim=-1).numpy()[0]
-
-    print(f"Fine-Tuned Verification Result: Real = {probs[0]:.4f} (100% Authentic Human!), Fake = {probs[1]:.4f}")
+    if eval_target.is_file():
+        img_eval = cv2.imread(str(eval_target))
+        if img_eval is not None:
+            rgb_eval = cv2.cvtColor(img_eval, cv2.COLOR_BGR2RGB)
+            boxes, _ = mtcnn.detect(rgb_eval)
+            if boxes is not None and len(boxes) > 0:
+                b = [int(v) for v in boxes[0]]
+                crop = rgb_eval[max(0, b[1]):min(rgb_eval.shape[0], b[3]), max(0, b[0]):min(rgb_eval.shape[1], b[2])]
+                if crop.size > 0:
+                    with torch.no_grad():
+                        t = torch.from_numpy(np.expand_dims(preprocess(crop), 0)).float().to(device)
+                        probs = torch.softmax(model(t), dim=-1).numpy()[0]
+                    print(f"Fine-Tuned Verification Result: Real = {probs[0]:.4f}, Fake = {probs[1]:.4f}")
 
     # Save robust checkpoint
     out_path = "video/outputs/best_model.pt"

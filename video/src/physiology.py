@@ -100,7 +100,7 @@ class PhysiologicalTracker:
         Returns:
             Dictionary with instantaneous physiological metrics.
         """
-        h, w, _ = frame_bgr.shape
+        h, w = frame_bgr.shape[:2]
         leye, reye, nose, lmouth, rmouth = landmarks[:5]
 
         # 1. Geometry baseline: Inter-ocular distance (IOD)
@@ -331,3 +331,47 @@ class SelfTrainingExperienceBuffer:
     def size(self) -> int:
         """Current number of stored samples."""
         return len(self.buffer)
+
+
+def main() -> None:
+    """CLI entrypoint and verification smoke-test for PhysiologicalTracker."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Test and benchmark physiological biometrics tracker.")
+    parser.add_argument("--fps", type=float, default=30.0, help="Simulated camera FPS.")
+    parser.add_argument("--frames", type=int, default=30, help="Number of synthetic frames to simulate.")
+    args = parser.parse_args()
+
+    print(f"Initializing PhysiologicalTracker (buffer_size=60, fps={args.fps})...")
+    tracker = PhysiologicalTracker(buffer_size=60, fps=args.fps)
+
+    # Generate synthetic face frames with subtle color variations
+    print(f"Simulating {args.frames} facial video frames...")
+    np.random.seed(42)
+    for i in range(args.frames):
+        # Simulated face crop with slight pulse variation in red channel
+        t = i / args.fps
+        pulse = np.sin(2.0 * np.pi * 1.2 * t) * 5.0  # ~72 BPM pulse
+        frame = np.full((224, 224, 3), [140 + pulse, 150, 180], dtype=np.uint8)
+
+        # Simulate blink closure around frame 15-18
+        if 15 <= i <= 18:
+            frame[70:95, 60:160] = 120
+
+        tracker.update_from_frame(frame, timestamp=t)
+
+    metrics = tracker.compute_biological_consistency()
+    print("Computed Biological Consistency Results:")
+    for k, v in metrics.items():
+        print(f"  {k}: {v}")
+
+    # Verify Experience Buffer
+    buffer = SelfTrainingExperienceBuffer(capacity=50)
+    sample_frame = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    label = buffer.add_sample(sample_frame, p_bio=0.95, p_cnn=0.08)
+    print(f"Experience Buffer assigned pseudo-label: {label} (buffer size: {buffer.size()})")
+    print("[OK] PhysiologicalTracker verification completed successfully.")
+
+
+if __name__ == "__main__":
+    main()

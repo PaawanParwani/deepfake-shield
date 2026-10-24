@@ -8,13 +8,15 @@ Usage:
     python audio/desktop_audio_shield.py [--backend URL] [--mode loopback|mic] [--threshold 0.65]
 """
 
+from __future__ import annotations
+
 import argparse
 import io
 import logging
 import math
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import requests
@@ -42,8 +44,10 @@ TARGET_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_SEC)
 ENERGY_THRESHOLD = 0.008  # RMS threshold for voice activity
 
 
-def get_wasapi_loopback_device(pa: pyaudio.PyAudio) -> Optional[dict]:
+def get_wasapi_loopback_device(pa: Any) -> Optional[dict]:
     """Locate the default Windows WASAPI Loopback recording device."""
+    if pyaudio is None or pa is None:
+        return None
     try:
         wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
         default_speakers = pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])

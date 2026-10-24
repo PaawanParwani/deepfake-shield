@@ -73,3 +73,5 @@ deploy/cloudflared.exe
 .gradle/
 mobile/android/.gradle/
 scratch/
+.wrangler/
+.pytest_cache/

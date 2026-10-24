@@ -20,6 +20,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import interp1d
@@ -30,15 +32,19 @@ import torch.nn.functional as F
 import yaml
 
 # Relative imports or package imports
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 
 try:
-    from .dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset
+    from .dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset, detect_data_format
     from .model import build_model
 except ImportError:
-    from dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset
+    from dataset import ASVSpoof2019LADataset, create_dataloader, create_synthetic_dataset, detect_data_format
     from model import build_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -223,13 +229,15 @@ def run_adversarial_evaluation(
     smoke_test = config.get("smoke_test", False)
     smoke_test_size = config.get("smoke_test_size", 500)
 
-    from audio.src.dataset import detect_data_format
     temp_dir_obj = None
-    data_format = detect_data_format(data_dir)
+    has_parquet = (data_dir / "data").exists() and bool(list((data_dir / "data").glob("*.parquet")))
+    has_flac = any((data_dir / f"ASVspoof2019_LA_{s}" / "flac").exists() for s in ["train", "dev", "eval"])
 
-    if data_format == "parquet":
+    if has_parquet:
         logger.info("Using parquet format (HuggingFace download). Protocol files not needed.")
-    elif not protocol_dir.exists():
+    elif has_flac and protocol_dir.exists():
+        logger.info("Using raw FLAC format with protocol directory: %s", protocol_dir)
+    else:
         logger.warning("Data not found. Using synthetic dataset for attack pipeline verification.")
         temp_dir_obj = tempfile.TemporaryDirectory()
         data_dir, protocol_dir = create_synthetic_dataset(
@@ -516,6 +524,11 @@ def main() -> None:
         choices=["auto", "cuda", "cpu"],
         help="Target execution device",
     )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run on a small subset of samples for rapid verification",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -525,6 +538,9 @@ def main() -> None:
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+
+    if args.smoke_test:
+        config["smoke_test"] = True
 
     results = run_adversarial_evaluation(
         checkpoint_path=args.checkpoint,

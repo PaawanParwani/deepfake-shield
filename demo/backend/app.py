@@ -165,9 +165,11 @@ class ModelContainer:
         self.physio_tracker: Any = None
         self.self_training_buffer: Any = None
         self.multimodal_fusion: Any = None
+        self.emotion_onnx_session: Any = None
         self.emotion_model: Any = None
         self.emotion_processor: Any = None
         self.emotion_labels: Optional[Dict[int, str]] = None
+        self.emotion_history: Dict[str, Any] = {}
 
 
 models = ModelContainer()
@@ -564,14 +566,40 @@ def init_video_model() -> None:
 
 def init_emotion_model() -> None:
     """Initialize lightweight emotion classifier or fallback to zero-RAM calibrated engine."""
+    models.emotion_onnx_session = None
     models.emotion_model = None
     models.emotion_processor = None
-    models.emotion_labels = None
-    skip_emotion = bool(os.getenv("SKIP_EMOTION_MODEL", "1") == "1")
+    models.emotion_labels = {
+        0: "Surprise",
+        1: "Fear",
+        2: "Disgust",
+        3: "Happiness",
+        4: "Sadness",
+        5: "Anger",
+        6: "Neutral"
+    }
+    models.emotion_history = {}
+
+    skip_emotion = bool(os.getenv("SKIP_EMOTION_MODEL", "0") == "1")
     if skip_emotion:
-        logger.info("SKIP_EMOTION_MODEL active: using zero-RAM calibrated affective emotion engine (memory safe for 512MB RAM).")
+        logger.info("SKIP_EMOTION_MODEL active: using zero-RAM calibrated affective emotion engine.")
         return
 
+    # 1. Try High-Speed ONNX Runtime RAF-DB Emotion Engine (~20ms latency)
+    rafdb_onnx_path = Path("models/rafdb_emotion.onnx")
+    if rafdb_onnx_path.exists() and ORT_AVAILABLE and ort is not None:
+        try:
+            sess_options = ort.SessionOptions()
+            sess_options.intra_op_num_threads = 4
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if models.device == "cuda" else ["CPUExecutionProvider"]
+            models.emotion_onnx_session = ort.InferenceSession(str(rafdb_onnx_path), sess_options, providers=providers)
+            logger.info("High-speed ONNX RAF-DB Facial Emotion Classifier loaded from %s.", rafdb_onnx_path)
+            return
+        except Exception as onnx_exc:
+            logger.warning("Could not load ONNX emotion model %s: %s (falling back to PyTorch)", rafdb_onnx_path, onnx_exc)
+
+    # 2. Fallback to PyTorch Transformers RAF-DB ViT Classifier
     try:
         from transformers import AutoImageProcessor, AutoModelForImageClassification
         model_name = os.getenv("EMOTION_MODEL_NAME", "carlosleao/RAFDB-Facial-Expression-Recognition")
@@ -583,7 +611,8 @@ def init_emotion_model() -> None:
 
         models.emotion_processor = processor
         models.emotion_model = model
-        models.emotion_labels = model.config.id2label
+        if hasattr(model.config, "id2label") and model.config.id2label:
+            models.emotion_labels = {int(k): v for k, v in model.config.id2label.items()}
         logger.info("Neural Facial Emotion Recognition (RAF-DB) model loaded successfully on %s.", models.device)
     except Exception as exc:
         logger.warning("Could not initialize neural emotion model (falling back to landmark metrics): %s", exc)
@@ -1103,9 +1132,9 @@ def health_check() -> Dict[str, Any]:
         "device": models.device,
         "audio_status": "ready" if (models.audio_model or models.audio_onnx_session) else (models.audio_error or "not loaded"),
         "video_status": "ready" if (models.video_model or models.video_onnx_session) else (models.video_error or "not loaded"),
-        "emotion_model": "RAF-DB Neural ViT Classifier" if models.emotion_model is not None else "Landmark Heuristics",
+        "emotion_model": "RAF-DB Neural ONNX Classifier" if models.emotion_onnx_session is not None else ("RAF-DB Neural ViT Classifier" if models.emotion_model is not None else "Landmark Heuristics"),
         "emotion_dataset": "RAF-DB (Real-world Affective Faces Database - 29.6k samples)",
-        "emotion_status": "ready" if models.emotion_model is not None else "fallback",
+        "emotion_status": "ready" if (models.emotion_onnx_session is not None or models.emotion_model is not None) else "fallback",
         "render_memory_safe": True,
     }
 
@@ -1253,7 +1282,7 @@ async def predict_frame(
 
     img_bytes: Optional[bytes] = None
 
-    if file is not None:
+    if file is not None and isinstance(file, UploadFile):
         validate_file_size(file)
         img_bytes = await file.read()
     else:
@@ -1297,14 +1326,22 @@ async def predict_frame(
     imagenet_mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
     imagenet_std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
-    def compute_emotion_metrics(crop_rgb, landmarks, bw: int, bh: int) -> Dict[str, Any]:
+    def compute_emotion_metrics(crop_rgb, landmarks, bw: int, bh: int, cx: int = 0, cy: int = 0) -> Dict[str, Any]:
         """Compute affective expression using the RAF-DB neural classifier with occlusion fallback."""
         emotion = "Focused / Calm 👤"
         sentiment = "neutral"
         smile_score = 0.5
         confidence = 90.0
 
-        # 1. Check Hand-to-Face / Chin Occlusion using rotation-invariant geometry
+        # Spatial grid key for temporal smoothing across video frames
+        face_key = f"face_{int(cx // 45)}_{int(cy // 45)}"
+        now_ts = time.time()
+        prev_entry = models.emotion_history.get(face_key)
+        if prev_entry is not None and isinstance(prev_entry, dict) and "result" in prev_entry:
+            if now_ts - prev_entry.get("time", 0.0) < 0.30:
+                return prev_entry["result"]
+
+        # 1. Check Hand-to-Face / Chin Occlusion (strict physiological constraints)
         is_hand_occluded = False
         open_ratio = 0.55
         smile_ratio = 0.80
@@ -1330,84 +1367,173 @@ async def predict_frame(
                 if rel_angle_diff > np.pi:
                     rel_angle_diff = 2 * np.pi - rel_angle_diff
 
-                # Hand occlusion: severe vertical mouth compression or asymmetric hand support on chin
-                is_hand_occluded = open_ratio < 0.38 or rel_angle_diff > 0.40
+                # Only trigger occlusion if there is severe physical obstruction covering the lower face
+                is_hand_occluded = open_ratio < 0.26 and rel_angle_diff > 0.52
             except Exception:
                 pass
 
         if is_hand_occluded:
-            return {
+            res_occ = {
                 "emotion": "Thinking / Focused 🤔",
                 "sentiment": "neutral",
                 "smile_score": round(smile_ratio, 2),
-                "model": "hand_occlusion_guard"
+                "model": "hand_occlusion_guard",
+                "confidence": 88.0,
             }
+            models.emotion_history[face_key] = {"probs": None, "time": now_ts, "result": res_occ}
+            return res_occ
 
-        # 2. RAF-DB Neural Facial Emotion Classifier (if active)
+        # 2. High-Speed ONNX RAF-DB Emotion Inference (~10-20ms)
+        if models.emotion_onnx_session is not None and crop_rgb is not None:
+            try:
+                resized_raf = cv2.resize(crop_rgb, (224, 224), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
+                norm_raf = (resized_raf - mean) / std
+                ch_first = np.transpose(norm_raf, (2, 0, 1))[np.newaxis, ...]
+                in_name = models.emotion_onnx_session.get_inputs()[0].name
+                raw_logits = models.emotion_onnx_session.run(None, {in_name: ch_first})[0][0]
+                exp_l = np.exp(raw_logits - np.max(raw_logits))
+                raw_probs = exp_l / np.sum(exp_l)
+
+                # Temporal Exponential Moving Average (EMA) smoothing across frames
+                prev_probs = prev_entry.get("probs") if (prev_entry and isinstance(prev_entry, dict)) else None
+                if prev_probs is not None and len(prev_probs) == len(raw_probs):
+                    probs = 0.55 * raw_probs + 0.45 * prev_probs
+                else:
+                    probs = raw_probs
+
+                top_idx = int(np.argmax(probs))
+                raw_label = models.emotion_labels.get(top_idx, "Neutral") if models.emotion_labels else "Neutral"
+                conf_pct = float(probs[top_idx]) * 100.0
+
+                label_lower = raw_label.lower()
+                # RAF-DB 7 classes: 0: Surprise, 1: Fear, 2: Disgust, 3: Happiness, 4: Sadness, 5: Anger, 6: Neutral
+                if "happ" in label_lower and probs[top_idx] >= 0.35:
+                    emotion = "Smiling / Happy 😊"
+                    sentiment = "positive"
+                    smile_score = round(float(probs[top_idx]), 2)
+                elif "surpris" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Surprised 😲"
+                    sentiment = "alert"
+                    smile_score = 0.5
+                elif "sad" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Pensive / Serious 😔"
+                    sentiment = "neutral"
+                    smile_score = 0.2
+                elif "anger" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Focused / Stern 😠"
+                    sentiment = "neutral"
+                    smile_score = 0.2
+                elif "disgust" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Disapproving 😒"
+                    sentiment = "neutral"
+                    smile_score = 0.3
+                elif "fear" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Concerned / Anxious 😟"
+                    sentiment = "alert"
+                    smile_score = 0.4
+                else:
+                    emotion = "Focused / Calm 👤"
+                    sentiment = "neutral"
+                    smile_score = round(float(probs[3]), 2) if len(probs) > 3 else 0.5
+
+                res_onnx = {
+                    "emotion": emotion,
+                    "sentiment": sentiment,
+                    "smile_score": round(smile_score, 2),
+                    "model": "RAF-DB Neural ONNX",
+                    "confidence": round(conf_pct, 1),
+                }
+                models.emotion_history[face_key] = {"probs": probs, "time": now_ts, "result": res_onnx}
+                return res_onnx
+            except Exception as onnx_err:
+                logger.debug("ONNX emotion inference exception: %s", onnx_err)
+
+        # 3. PyTorch ViT RAF-DB Classifier Fallback
         if models.emotion_model is not None and models.emotion_processor is not None and crop_rgb is not None:
             try:
                 inputs = models.emotion_processor(images=crop_rgb, return_tensors="pt")
                 inputs = {k: v.to(models.device) for k, v in inputs.items()}
-                with torch.no_grad():
+                with torch.inference_mode():
                     logits = models.emotion_model(**inputs).logits
-                    probs = torch.softmax(logits, dim=-1)[0]
-                    top_idx = int(torch.argmax(probs))
-                    raw_label = models.emotion_labels.get(top_idx, "Neutral") if models.emotion_labels else "Neutral"
-                    conf_pct = float(probs[top_idx]) * 100.0
+                    raw_probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+
+                prev_probs = prev_entry.get("probs") if (prev_entry and isinstance(prev_entry, dict)) else None
+                if prev_probs is not None and len(prev_probs) == len(raw_probs):
+                    probs = 0.55 * raw_probs + 0.45 * prev_probs
+                else:
+                    probs = raw_probs
+
+                top_idx = int(np.argmax(probs))
+                raw_label = models.emotion_labels.get(top_idx, "Neutral") if models.emotion_labels else "Neutral"
+                conf_pct = float(probs[top_idx]) * 100.0
 
                 label_lower = raw_label.lower()
-                is_speaking = open_ratio >= 0.76 and smile_ratio < 0.98
-
-                if "happ" in label_lower and float(probs[top_idx]) >= 0.50:
-                    emotion = "Smiling 😊"
+                if "happ" in label_lower and probs[top_idx] >= 0.35:
+                    emotion = "Smiling / Happy 😊"
                     sentiment = "positive"
                     smile_score = round(float(probs[top_idx]), 2)
-                elif "surpris" in label_lower and float(probs[top_idx]) >= 0.65:
+                elif "surpris" in label_lower and probs[top_idx] >= 0.40:
                     emotion = "Surprised 😲"
                     sentiment = "alert"
-                elif is_speaking:
-                    emotion = "Speaking / Engaged 💬"
-                    sentiment = "active"
-                elif "anger" in label_lower and float(probs[top_idx]) >= 0.55:
-                    emotion = "Intense / Focused 🧐"
+                    smile_score = 0.5
+                elif "sad" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Pensive / Serious 😔"
                     sentiment = "neutral"
-                elif "sad" in label_lower and float(probs[top_idx]) >= 0.55:
-                    emotion = "Pensive / Focused 👤"
+                    smile_score = 0.2
+                elif "anger" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Focused / Stern 😠"
                     sentiment = "neutral"
+                    smile_score = 0.2
+                elif "disgust" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Disapproving 😒"
+                    sentiment = "neutral"
+                    smile_score = 0.3
+                elif "fear" in label_lower and probs[top_idx] >= 0.40:
+                    emotion = "Concerned / Anxious 😟"
+                    sentiment = "alert"
+                    smile_score = 0.4
                 else:
                     emotion = "Focused / Calm 👤"
                     sentiment = "neutral"
+                    smile_score = round(float(probs[3]), 2) if len(probs) > 3 else 0.5
 
-                return {
+                res_vit = {
                     "emotion": emotion,
                     "sentiment": sentiment,
                     "smile_score": round(smile_score, 2),
                     "model": "RAF-DB Neural ViT",
-                    "confidence": round(conf_pct, 1)
+                    "confidence": round(conf_pct, 1),
                 }
+                models.emotion_history[face_key] = {"probs": probs, "time": now_ts, "result": res_vit}
+                return res_vit
             except Exception as e_err:
                 logger.debug("Neural emotion inference failed: %s", e_err)
 
-        # 3. Precision Affective Engine (calibrated for resting faces, smiles, and speaking)
-        if open_ratio >= 0.88:
+        # 4. Stabilized Affective Fallback (used only if both neural models are unavailable)
+        if open_ratio >= 0.95:
             emotion = "Surprised 😲"
             sentiment = "alert"
-        elif smile_ratio >= 1.05:
-            emotion = "Smiling 😊"
+        elif smile_ratio >= 1.15:
+            emotion = "Smiling / Happy 😊"
             sentiment = "positive"
-        elif open_ratio >= 0.76 and smile_ratio < 0.98:
+        elif open_ratio >= 0.82 and smile_ratio < 0.95:
             emotion = "Speaking / Engaged 💬"
             sentiment = "active"
         else:
             emotion = "Focused / Calm 👤"
             sentiment = "neutral"
 
-        return {
+        res_fb = {
             "emotion": emotion,
             "sentiment": sentiment,
-            "smile_score": round(smile_ratio, 2),
-            "model": "calibrated_affective_engine"
+            "smile_score": round(min(1.0, smile_ratio / 1.15), 2),
+            "model": "stabilized_affective_engine",
+            "confidence": 80.0,
         }
+        models.emotion_history[face_key] = {"probs": None, "time": now_ts, "result": res_fb}
+        return res_fb
 
     def compute_iou(boxA, boxB):
         xA = max(boxA[0], boxB[0])
@@ -1555,7 +1681,7 @@ async def predict_frame(
                 norm_upper = (upper_resized.astype(np.float32) / 255.0 - imagenet_mean) / imagenet_std
                 upper_transposed = np.transpose(norm_upper, (2, 0, 1))
 
-                emotion_info = compute_emotion_metrics(crop, lm, bw, bh)
+                emotion_info = compute_emotion_metrics(crop, lm, bw, bh, cx, cy)
 
                 extracted.append({
                     "ui_box": ui_box,
@@ -1587,11 +1713,33 @@ async def predict_frame(
 
     if models.mtcnn is not None:
         try:
+            # 4x-5x Fast Detection: Downscale frames to 320px for MTCNN proposal pass
+            scale_factor = 320.0 / max(1.0, float(w))
+            if scale_factor < 1.0:
+                small_h = int(round(h * scale_factor))
+                small_rgb = cv2.resize(frame_rgb, (320, small_h), interpolation=cv2.INTER_LINEAR)
+                boxes, probs, landmarks = models.mtcnn.detect(small_rgb, landmarks=True)
+                if boxes is not None and len(boxes) > 0:
+                    inv_s = 1.0 / scale_factor
+                    boxes = boxes * inv_s
+                    if landmarks is not None:
+                        landmarks = landmarks * inv_s
+                    valid_face_crops = extract_crops(boxes, probs, landmarks, frame_rgb)
+            else:
+                boxes, probs, landmarks = models.mtcnn.detect(frame_rgb, landmarks=True)
+                if boxes is not None and len(boxes) > 0:
+                    valid_face_crops = extract_crops(boxes, probs, landmarks, frame_rgb)
+        except Exception as exc:
+            logger.debug("MTCNN fast pass detection exception: %s", exc)
+
+    # Fallback to full-res detection if downscaled didn't find any face
+    if not valid_face_crops and models.mtcnn is not None and scale_factor < 1.0:
+        try:
             boxes, probs, landmarks = models.mtcnn.detect(frame_rgb, landmarks=True)
             if boxes is not None and len(boxes) > 0:
                 valid_face_crops = extract_crops(boxes, probs, landmarks, frame_rgb)
         except Exception as exc:
-            logger.debug("MTCNN primary pass detection exception: %s", exc)
+            logger.debug("MTCNN full-res fallback detection exception: %s", exc)
 
     # Pass 2: CLAHE adaptive contrast enhancement (salvages dim, backlit, tinted, or overexposed webcam frames)
     if not valid_face_crops and models.mtcnn is not None:
@@ -1656,7 +1804,7 @@ async def predict_frame(
         # Dual-Region Occlusion-Tolerant Verification:
         # If full face triggered elevated risk, verify unoccluded upper face (eyes/forehead)
         # to ensure chin resting, hands, coffee cups, or microphones do not trigger deepfake false alarms.
-        if raw_p_f > 0.40 and "upper_transposed" in c_info:
+        if raw_p_f >= 0.65 and "upper_transposed" in c_info:
             if models.video_onnx_session is not None:
                 try:
                     u_arr = np.expand_dims(c_info["upper_transposed"], 0).astype(np.float32)
