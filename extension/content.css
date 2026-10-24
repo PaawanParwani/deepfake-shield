@@ -180,6 +180,36 @@
   border-width: 0 3px 3px 0;
 }
 
+/* Visual Center Crosshairs (for sub-pixel alignment verification) */
+.hv-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0.6;
+}
+.hv-crosshair::before,
+.hv-crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(52, 211, 153, 0.85);
+}
+.hv-crosshair::before {
+  top: 6px;
+  left: 0;
+  width: 14px;
+  height: 2px;
+}
+.hv-crosshair::after {
+  top: 0;
+  left: 6px;
+  width: 2px;
+  height: 14px;
+}
+
 /* Uncertain Box State (Yellow/Amber HUD) */
 .hv-face-overlay.hv-uncertain-box {
   border-color: #f59e0b;

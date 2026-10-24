@@ -1843,11 +1843,15 @@ async def predict_frame(
             v_verdict = "uncertain"
             conf = round(max(50.0, p_f * 100.0), 1)
 
+        nb = c_info.get("norm_box", [0.0, 0.0, 0.0, 0.0])
+        norm_xywh = [nb[0], nb[1], round(nb[2] - nb[0], 5), round(nb[3] - nb[1], 5)]
         face_obj = {
             "face_id": f"target_{idx + 1}",
             "label": f"Target #{idx + 1}",
             "bounding_box": [int(v) for v in c_info["ui_box"]],
-            "norm_bbox": c_info.get("norm_box", [0.0, 0.0, 0.0, 0.0]),
+            "norm_bbox": nb,
+            "norm_xywh": norm_xywh,
+            "mirrored": False,
             "raw_box": [int(v) for v in c_info["raw_box"]],
             "p_fake": round(float(p_f), 4),
             "raw_p_fake": round(float(raw_p_f), 4),
@@ -1866,6 +1870,7 @@ async def predict_frame(
     face_detected = True
     bounding_box = [int(v) for v in faces_list[0]["bounding_box"]]
     norm_bbox = faces_list[0]["norm_bbox"] if faces_list else None
+    norm_xywh = faces_list[0]["norm_xywh"] if faces_list else None
     max_p_fake = float(max(f["p_fake"] for f in faces_list))
     has_fake = any(f["verdict"] == "suspicious" for f in faces_list)
     has_uncertain = any(f["verdict"] == "uncertain" for f in faces_list)
@@ -1894,6 +1899,8 @@ async def predict_frame(
         "face_count": face_count,
         "bounding_box": bounding_box,
         "norm_bbox": norm_bbox,
+        "norm_xywh": norm_xywh,
+        "mirrored": False,
         "emotion": primary_emotion,
         "faces": faces_list,
         "auto_focus": {

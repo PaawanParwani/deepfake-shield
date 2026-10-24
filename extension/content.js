@@ -10,22 +10,26 @@
   let config = {
     enabled: true,
     backendUrl: "http://127.0.0.1:8000",
-    scanIntervalMs: 1000,       // 1.0s search interval
-    scanIntervalLockedMs: 800,  // 0.8s verification interval when locked
+    scanIntervalMs: 1000,
+    scanIntervalLockedMs: 800,
     sensitivityThreshold: 0.88,
-    mirrorMode: "normal",       // "normal" (auto-detects mirrored video), "flipped", "unmirrored"
-    debug: false
+    mirrorMode: "normal", // "normal" (direct 1:1 camera mapping), "flipped" (mirror inverted), "auto"
+    debug: true
   };
 
   // State
   let inFlight = false;
   let activeVideo = null;
+  let activeVideoResizeObserver = null;
+  let activeVideoMutationObserver = null;
   let hudBadge = null;
   let overlayRoot = null;
   let dockPill = null;
   let consecutiveNoFaceCount = 0;
   let consecutiveBackendFailures = 0;
   let loopRunning = false;
+  let lastCapturedW = 320;
+  let lastCapturedH = 180;
 
   // Active Multi-Face Tracking Map: id -> TrackedFace
   const trackedFaces = new Map();
@@ -51,7 +55,7 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  // Sync extension storage config
+  // Sync extension storage config (persists user preferences across reconnects)
   if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(
       ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold", "mirrorMode"],
@@ -61,12 +65,13 @@
             stored.backendUrl = "http://127.0.0.1:8000";
             chrome.storage.local.set({ backendUrl: "http://127.0.0.1:8000" });
           }
-          if (!stored.mirrorMode) {
+          if (stored.mirrorMode === undefined || stored.mirrorMode === null) {
             stored.mirrorMode = "normal";
           }
           config = { ...config, ...stored };
         }
         updateDockPill();
+        updateFlipButtonLabel();
       }
     );
 
@@ -81,6 +86,7 @@
           }
         }
         updateDockPill();
+        updateFlipButtonLabel();
       }
     });
   }
@@ -123,6 +129,9 @@
       offscreenCtx.imageSmoothingQuality = "medium";
       offscreenCtx.drawImage(video, 0, 0, targetW, targetH);
 
+      lastCapturedW = targetW;
+      lastCapturedH = targetH;
+
       return {
         dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.75),
         capturedW: targetW,
@@ -133,63 +142,47 @@
     }
   }
 
-  // High-Precision Mirroring Detection for Google Meet, Zoom, Teams, Webex
-  function isVideoMirrored(video) {
-    if (!video) return false;
-
-    // Explicit user override if configured
-    if (config.mirrorMode === "flipped") return true;
-    if (config.mirrorMode === "normal") return false; // Default: direct 1:1 camera alignment!
-
+  // Comprehensive transform detection across video and all DOM ancestors
+  function getElementTransformInfo(video) {
+    if (!video) return { hasMirror: false, transforms: [] };
     let el = video;
-    let mirrorCount = 0;
+    let hasMirror = false;
+    const transforms = [];
+
     while (el && el !== document.documentElement) {
       try {
-        const inlineT = (el.style && el.style.transform) ? el.style.transform.toLowerCase() : "";
-        if (
-          inlineT.includes("scalex(-1)") ||
-          inlineT.includes("scale(-1") ||
-          inlineT.includes("rotatey(180deg)") ||
-          inlineT.includes("matrix(-1")
-        ) {
-          mirrorCount++;
-        } else {
-          const compStyle = window.getComputedStyle(el);
-          const t = (compStyle.transform || compStyle.webkitTransform || "").toLowerCase();
-          if (t && t !== "none") {
-            if (
-              t.includes("scalex(-1)") ||
-              t.includes("scale(-1") ||
-              t.includes("rotatey(180deg)")
-            ) {
-              mirrorCount++;
-            } else if (t.startsWith("matrix(")) {
-              const match = t.match(/^matrix\(\s*([-\d.]+)/);
-              if (match && parseFloat(match[1]) < -0.1) {
-                mirrorCount++;
-              }
-            } else if (t.startsWith("matrix3d(")) {
-              const match = t.match(/^matrix3d\(\s*([-\d.]+)/);
-              if (match && parseFloat(match[1]) < -0.1) {
-                mirrorCount++;
-              }
-            }
+        const compStyle = window.getComputedStyle(el);
+        const t = (compStyle.transform || compStyle.webkitTransform || "").toLowerCase();
+        if (t && t !== "none") {
+          const identifier = `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''}`;
+          transforms.push(`${identifier}: ${t}`);
+          if (
+            t.includes("matrix(-1") ||
+            t.includes("scalex(-1)") ||
+            t.includes("scale(-1") ||
+            t.includes("rotatey(180deg)")
+          ) {
+            hasMirror = true;
           }
         }
       } catch {}
       el = el.parentElement;
     }
 
-    return mirrorCount % 2 === 1;
+    return { hasMirror, transforms };
   }
 
-  // Exact Rendered Video Geometry with intrinsic aspect-ratio compensation
+  // Mathematical CSS object-fit Geometry (Letterbox / Pillarbox / Crop Compensated)
   function getRenderedVideoGeometry(video) {
+    if (!video || !document.body.contains(video)) return null;
+
     const rect = video.getBoundingClientRect();
     const elemW = rect.width;
     const elemH = rect.height;
     const vw = video.videoWidth || elemW || 640;
     const vh = video.videoHeight || elemH || 480;
+
+    if (elemW <= 0 || elemH <= 0 || vw <= 0 || vh <= 0) return null;
 
     const style = window.getComputedStyle(video);
     const objectFit = style.objectFit || "cover";
@@ -204,24 +197,28 @@
 
     if (objectFit === "contain") {
       if (elemRatio > videoRatio) {
+        // Pillarboxed: black bars left and right
         renderH = elemH;
         renderW = elemH * videoRatio;
         offsetX = (elemW - renderW) / 2;
         offsetY = 0;
       } else {
+        // Letterboxed: black bars top and bottom
         renderW = elemW;
         renderH = elemW / videoRatio;
         offsetX = 0;
         offsetY = (elemH - renderH) / 2;
       }
     } else {
-      // object-fit: cover (default in Google Meet participant tiles)
+      // object-fit: cover (standard for Google Meet participant video tiles)
       if (elemRatio > videoRatio) {
+        // Top and bottom cropped
         renderW = elemW;
         renderH = elemW / videoRatio;
         offsetX = 0;
         offsetY = (elemH - renderH) / 2;
       } else {
+        // Left and right cropped
         renderH = elemH;
         renderW = elemH * videoRatio;
         offsetX = (elemW - renderW) / 2;
@@ -229,7 +226,20 @@
       }
     }
 
-    return { left: rect.left, top: rect.top, width: elemW, height: elemH, renderW, renderH, offsetX, offsetY };
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: elemW,
+      height: elemH,
+      renderW,
+      renderH,
+      offsetX,
+      offsetY,
+      objectFit,
+      vw,
+      vh,
+      dpr: window.devicePixelRatio || 1
+    };
   }
 
   function isElementVisible(el) {
@@ -253,10 +263,24 @@
     });
   }
 
+  // Deterministically select the primary video element
   function findPrimaryVideo() {
     const candidates = getCandidateVideos();
     if (candidates.length === 0) return null;
 
+    // Prefer active self-view video if available
+    const selfVideo = candidates.find((v) => {
+      return !!(
+        v.closest("[data-self-name]") ||
+        v.closest("[data-is-self-view='true']") ||
+        v.getAttribute("data-is-self-view") === "true" ||
+        v.className.includes("self") ||
+        (v.parentElement && v.parentElement.className.includes("self"))
+      );
+    });
+    if (selfVideo) return selfVideo;
+
+    // Otherwise select the largest visible active video
     let best = candidates[0];
     let maxArea = 0;
     for (const v of candidates) {
@@ -278,6 +302,61 @@
     return best;
   }
 
+  // Real-time ResizeObserver: Re-anchors bounding boxes instantly during layout changes / window resize
+  function attachVideoObservers(video) {
+    if (activeVideoResizeObserver) {
+      activeVideoResizeObserver.disconnect();
+      activeVideoResizeObserver = null;
+    }
+
+    if (window.ResizeObserver && video) {
+      activeVideoResizeObserver = new ResizeObserver(() => {
+        repositionTrackedFaces();
+        updateHUDBadgePosition();
+      });
+      activeVideoResizeObserver.observe(video);
+      if (video.parentElement) {
+        activeVideoResizeObserver.observe(video.parentElement);
+      }
+    }
+  }
+
+  // Repositions currently tracked faces immediately using latest geometry
+  function repositionTrackedFaces() {
+    if (!activeVideo || trackedFaces.size === 0) return;
+    const geom = getRenderedVideoGeometry(activeVideo);
+    if (!geom) return;
+
+    const transformInfo = getElementTransformInfo(activeVideo);
+    const shouldFlip = config.mirrorMode === "flipped" ? true :
+                       config.mirrorMode === "auto" ? transformInfo.hasMirror :
+                       false;
+
+    for (const [id, face] of trackedFaces.entries()) {
+      if (!face.lastNormBox || !face.overlayElement) continue;
+
+      let [nx1, ny1, nx2, ny2] = face.lastNormBox;
+      if (shouldFlip) {
+        const origNx1 = nx1;
+        nx1 = 1.0 - nx2;
+        nx2 = 1.0 - origNx1;
+      }
+
+      const targetX = geom.left + geom.offsetX + (nx1 * geom.renderW);
+      const targetY = geom.top + geom.offsetY + (ny1 * geom.renderH);
+      const targetW = (nx2 - nx1) * geom.renderW;
+      const targetH = (ny2 - ny1) * geom.renderH;
+
+      face.smoothed = { x: targetX, y: targetY, w: targetW, h: targetH };
+
+      const el = face.overlayElement;
+      el.style.left = `${Math.round(targetX)}px`;
+      el.style.top = `${Math.round(targetY)}px`;
+      el.style.width = `${Math.round(targetW)}px`;
+      el.style.height = `${Math.round(targetH)}px`;
+    }
+  }
+
   // Single-Thread Non-Overlapping Live Frame Scan (Promise-based)
   function executeLiveScan() {
     return new Promise((resolve) => {
@@ -296,6 +375,7 @@
       if (activeVideo !== video) {
         activeVideo = video;
         attachHUD(video);
+        attachVideoObservers(video);
       }
 
       const capture = captureCompactFrame(video);
@@ -307,7 +387,7 @@
       inFlight = true;
       const reqStart = performance.now();
 
-      // Generous watchdog timeout (7500ms) to tolerate background CPU usage
+      // Watchdog timeout to prevent frozen requests
       const watchdogId = setTimeout(() => {
         if (inFlight) {
           inFlight = false;
@@ -342,7 +422,7 @@
               consecutiveBackendFailures = 0;
               const clientLatency = Math.round(performance.now() - reqStart);
               try {
-                processDetections(response.data, video, capture.capturedW, capture.capturedH, clientLatency);
+                processDetections(response.data, video, capture, clientLatency);
               } catch (err) {
                 debugLog("Detection process error:", err);
               }
@@ -392,6 +472,14 @@
     loopRunning = false;
   }
 
+  function updateFlipButtonLabel() {
+    if (!hudBadge) return;
+    const flipBtn = hudBadge.querySelector("#hv-btn-flip");
+    if (flipBtn) {
+      flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Normal";
+    }
+  }
+
   function attachHUD(video) {
     getOrCreateOverlayRoot();
 
@@ -404,13 +492,13 @@
           <span id="hv-badge-title">PROTECTED</span>
           <span class="hv-hud-score" id="hv-badge-score">Scanning face...</span>
         </div>
-        <button id="hv-btn-flip" title="Toggle Mirror / Flip (⇄)" class="hv-badge-flip-btn">⇄ Flip</button>
+        <button id="hv-btn-flip" title="Toggle Mirror / Flip (⇄)" class="hv-badge-flip-btn">⇄ Normal</button>
       `;
       document.body.appendChild(hudBadge);
 
       const flipBtn = hudBadge.querySelector("#hv-btn-flip");
       if (flipBtn) {
-        flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Normal";
+        updateFlipButtonLabel();
         flipBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           // Toggle between direct 1:1 ("normal") and horizontal mirror ("flipped")
@@ -418,7 +506,8 @@
           if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
             chrome.storage.local.set({ mirrorMode: config.mirrorMode });
           }
-          flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Normal";
+          updateFlipButtonLabel();
+          repositionTrackedFaces();
           executeLiveScan();
         });
       }
@@ -432,6 +521,7 @@
           activeVideo = v;
           consecutiveNoFaceCount = 0;
           attachHUD(v);
+          attachVideoObservers(v);
           executeLiveScan();
         });
       }
@@ -450,17 +540,28 @@
     hudBadge.style.top = `${Math.round(rect.top + 14)}px`;
   }
 
-  // Multi-Face Tracking & Coordinate Mapping
-  function processDetections(data, video, capturedW, capturedH, clientLatency) {
-    if (!hudBadge) return;
+  // Multi-Face Tracking, Normalized Coordinate Mapping & Diagnostic Telemetry
+  function processDetections(data, video, capture, clientLatency) {
+    if (!hudBadge || !video) return;
     const root = getOrCreateOverlayRoot();
 
     const { verdict, face_detected, latency_ms, emotion } = data;
-    const fw = data.frame_width || capturedW || 320;
-    const fh = data.frame_height || capturedH || 240;
-
     const geom = getRenderedVideoGeometry(video);
-    const shouldFlip = config.mirrorMode === "flipped";
+    if (!geom) return;
+
+    const fw = data.frame_width || capture.capturedW || 320;
+    const fh = data.frame_height || capture.capturedH || 180;
+
+    // Computed transform analysis on video and all DOM ancestors
+    const transformInfo = getElementTransformInfo(video);
+
+    // Mirror logic:
+    // "normal" (default): Direct 1:1 camera mapping.
+    // "flipped": Invert horizontal axis.
+    // "auto": Follow CSS transform if present.
+    const shouldFlip = config.mirrorMode === "flipped" ? true :
+                       config.mirrorMode === "auto" ? transformInfo.hasMirror :
+                       false;
 
     // ZERO FACES DETECTED: Instant Ghost Box Purge
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
@@ -472,7 +573,6 @@
         dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
       }
 
-      // Purge all stale boxes immediately
       for (const [id, face] of trackedFaces.entries()) {
         if (face.overlayElement && face.overlayElement.parentNode) {
           face.overlayElement.parentNode.removeChild(face.overlayElement);
@@ -484,51 +584,83 @@
     }
 
     consecutiveNoFaceCount = 0;
-
     const detections = data.faces;
     const matchedTrackIds = new Set();
 
     const mappedDetections = detections.map((det, idx) => {
       const box = det.bounding_box || [0, 0, 0, 0];
-      const normBox = det.norm_bbox || [
-        (box[0] || 0) / (fw || 320),
-        (box[1] || 0) / (fh || 240),
-        (box[2] || 0) / (fw || 320),
-        (box[3] || 0) / (fh || 240)
-      ];
 
-      let nx1 = Math.max(0.0, Math.min(1.0, normBox[0]));
-      let ny1 = Math.max(0.0, Math.min(1.0, normBox[1]));
-      let nx2 = Math.max(0.0, Math.min(1.0, normBox[2]));
-      let ny2 = Math.max(0.0, Math.min(1.0, normBox[3]));
+      // Extract normalized bounding box from backend [x1, y1, x2, y2]
+      let nx1, ny1, nx2, ny2;
+      if (det.norm_xywh && det.norm_xywh.length >= 4) {
+        nx1 = det.norm_xywh[0];
+        ny1 = det.norm_xywh[1];
+        nx2 = nx1 + det.norm_xywh[2];
+        ny2 = ny1 + det.norm_xywh[3];
+      } else if (det.norm_bbox && det.norm_bbox.length >= 4) {
+        nx1 = det.norm_bbox[0];
+        ny1 = det.norm_bbox[1];
+        nx2 = det.norm_bbox[2];
+        ny2 = det.norm_bbox[3];
+      } else {
+        nx1 = (box[0] || 0) / fw;
+        ny1 = (box[1] || 0) / fh;
+        nx2 = (box[2] || 0) / fw;
+        ny2 = (box[3] || 0) / fh;
+      }
 
-      // Horizontal flip: only when mirrorMode is explicitly "flipped"
+      nx1 = Math.max(0.0, Math.min(1.0, nx1));
+      ny1 = Math.max(0.0, Math.min(1.0, ny1));
+      nx2 = Math.max(0.0, Math.min(1.0, nx2));
+      ny2 = Math.max(0.0, Math.min(1.0, ny2));
+
+      const rawNormBox = [nx1, ny1, nx2, ny2];
+
+      // Horizontal flip mapping if mirroring is active
       if (shouldFlip) {
         const origNx1 = nx1;
         nx1 = 1.0 - nx2;
         nx2 = 1.0 - origNx1;
       }
 
-      const screenX = geom.left + geom.offsetX + (nx1 * geom.renderW);
-      const screenY = geom.top + geom.offsetY + (ny1 * geom.renderH);
-      const screenW = (nx2 - nx1) * geom.renderW;
-      const screenH = (ny2 - ny1) * geom.renderH;
-      const centerX = screenX + screenW / 2;
-      const centerY = screenY + screenH / 2;
+      const targetX = geom.left + geom.offsetX + (nx1 * geom.renderW);
+      const targetY = geom.top + geom.offsetY + (ny1 * geom.renderH);
+      const targetW = (nx2 - nx1) * geom.renderW;
+      const targetH = (ny2 - ny1) * geom.renderH;
+      const centerX = targetX + targetW / 2;
+      const centerY = targetY + targetH / 2;
 
-      // Diagnostic logging directly in DevTools console (requested in report)
+      // Real-Time Engineering Diagnostic Log (as requested)
       if (idx === 0) {
         console.log(
-          `[Deepfake Shield BBox] raw: [${box.join(",")}] ` +
-          `norm: [${nx1.toFixed(3)},${ny1.toFixed(3)},${nx2.toFixed(3)},${ny2.toFixed(3)}] ` +
-          `video: ${video.videoWidth}x${video.videoHeight} ` +
-          `elem: ${Math.round(geom.width)}x${Math.round(geom.height)} ` +
-          `screen: [${Math.round(screenX)},${Math.round(screenY)},${Math.round(screenW)},${Math.round(screenH)}] ` +
-          `mode: ${config.mirrorMode}`
+          `%c[Deepfake Shield Per-Frame Debug]%c\n` +
+          `• backend bbox: [${box.join(', ')}]\n` +
+          `• norm_xywh: [${nx1.toFixed(3)}, ${ny1.toFixed(3)}, ${(nx2 - nx1).toFixed(3)}, ${(ny2 - ny1).toFixed(3)}]\n` +
+          `• frame sent: ${capture.capturedW}x${capture.capturedH}\n` +
+          `• video: ${video.videoWidth}x${video.videoHeight} (ratio: ${(video.videoWidth / video.videoHeight).toFixed(3)})\n` +
+          `• elem: ${Math.round(geom.width)}x${Math.round(geom.height)} (client: ${video.clientWidth}x${video.clientHeight})\n` +
+          `• getBoundingClientRect: left=${Math.round(geom.left)}, top=${Math.round(geom.top)}, w=${Math.round(geom.width)}, h=${Math.round(geom.height)}\n` +
+          `• object-fit: ${geom.objectFit}, renderW: ${Math.round(geom.renderW)}, renderH: ${Math.round(geom.renderH)}, offset: (${Math.round(geom.offsetX)}, ${Math.round(geom.offsetY)})\n` +
+          `• transforms: [${transformInfo.transforms.join(' | ') || 'none'}]\n` +
+          `• mirror applied: ${shouldFlip} (mode: ${config.mirrorMode})\n` +
+          `• screen target: left=${Math.round(targetX)}px, top=${Math.round(targetY)}px, w=${Math.round(targetW)}px, h=${Math.round(targetH)}px\n` +
+          `• devicePixelRatio: ${window.devicePixelRatio}`,
+          "color: #0ea5e9; font-weight: bold;",
+          "color: inherit;"
         );
       }
 
-      return { det, targetIndex: idx + 1, screenX, screenY, screenW, screenH, centerX, centerY };
+      return {
+        det,
+        targetIndex: idx + 1,
+        targetX,
+        targetY,
+        targetW,
+        targetH,
+        centerX,
+        centerY,
+        rawNormBox
+      };
     });
 
     mappedDetections.forEach((mDet) => {
@@ -549,31 +681,44 @@
         tagEl.className = "hv-face-tag";
         overlayEl.appendChild(tagEl);
 
+        const crosshairEl = document.createElement("div");
+        crosshairEl.className = "hv-crosshair";
+        overlayEl.appendChild(crosshairEl);
+
         root.appendChild(overlayEl);
 
         bestMatch = {
           id: newId,
           label: `Face #${mDet.targetIndex}`,
           overlayElement: overlayEl,
-          tagElement: tagEl
+          tagElement: tagEl,
+          crosshairElement: crosshairEl,
+          smoothed: { x: mDet.targetX, y: mDet.targetY, w: mDet.targetW, h: mDet.targetH }
         };
 
         trackedFaces.set(newId, bestMatch);
       }
 
       matchedTrackIds.add(bestMatch.id);
+      bestMatch.lastNormBox = mDet.rawNormBox;
       bestMatch.emotion = mDet.det.emotion || "Focused / Calm 👤";
       bestMatch.verdict = mDet.det.verdict || "authentic";
       bestMatch.confidence = mDet.det.confidence || 100.0;
 
-      // Direct GPU-accelerated CSS positioning (Zero main-thread layout thrashing)
+      // Exponential Moving Average (EMA) smoothing (alpha = 0.75): smooths webcam noise without lag
+      const alpha = 0.75;
+      bestMatch.smoothed.x = alpha * mDet.targetX + (1 - alpha) * bestMatch.smoothed.x;
+      bestMatch.smoothed.y = alpha * mDet.targetY + (1 - alpha) * bestMatch.smoothed.y;
+      bestMatch.smoothed.w = alpha * mDet.targetW + (1 - alpha) * bestMatch.smoothed.w;
+      bestMatch.smoothed.h = alpha * mDet.targetH + (1 - alpha) * bestMatch.smoothed.h;
+
       const el = bestMatch.overlayElement;
       if (el) {
         el.style.display = "block";
-        el.style.left = `${Math.round(mDet.screenX)}px`;
-        el.style.top = `${Math.round(mDet.screenY)}px`;
-        el.style.width = `${Math.round(mDet.screenW)}px`;
-        el.style.height = `${Math.round(mDet.screenH)}px`;
+        el.style.left = `${Math.round(bestMatch.smoothed.x)}px`;
+        el.style.top = `${Math.round(bestMatch.smoothed.y)}px`;
+        el.style.width = `${Math.round(bestMatch.smoothed.w)}px`;
+        el.style.height = `${Math.round(bestMatch.smoothed.h)}px`;
         el.style.opacity = "1";
 
         const nameDisplay = bestMatch.label || "Face";
@@ -611,7 +756,6 @@
       }
     }
 
-    // Keep top HUD position synced
     updateHUDBadgePosition();
 
     // Floating Top HUD Badge
@@ -638,7 +782,6 @@
       }
     }
 
-    // Throttled status broadcast to background
     broadcastStatusUpdate(
       suspiciousFaces.length > 0 ? "suspicious" : "authentic",
       totalFaces > 0 ? activeList[0].confidence : 100.0,
@@ -646,7 +789,7 @@
     );
   }
 
-  // Throttled Status Broadcast
+  // Throttled Status Broadcast to service worker
   let lastBroadcastStatus = "";
   let lastBroadcastTime = 0;
 
@@ -671,7 +814,6 @@
       hudBadge.querySelector("#hv-badge-title").textContent = "SHIELD READY";
       hudBadge.querySelector("#hv-badge-score").textContent = "Connecting to backend...";
     }
-    // Clean up all ghost boxes immediately
     for (const [id, face] of trackedFaces.entries()) {
       if (face.overlayElement && face.overlayElement.parentNode) {
         face.overlayElement.parentNode.removeChild(face.overlayElement);
@@ -720,6 +862,7 @@
       if (v) {
         activeVideo = v;
         attachHUD(v);
+        attachVideoObservers(v);
         executeLiveScan();
       }
     });
@@ -828,22 +971,27 @@
     }
   }
 
-  window.addEventListener("resize", updateHUDBadgePosition);
+  window.addEventListener("resize", () => {
+    repositionTrackedFaces();
+    updateHUDBadgePosition();
+  });
 
-  // Throttled check for camera reconnects if video disconnects
-  setInterval(() => {
+  // Global MutationObserver: Detects video element creation/swaps in Google Meet
+  activeVideoMutationObserver = new MutationObserver(() => {
     if (document.hidden || !config.enabled) return;
-    if (!activeVideo || !document.body.contains(activeVideo)) {
+    if (!activeVideo || !document.body.contains(activeVideo) || activeVideo.videoWidth < 40) {
       const v = findPrimaryVideo();
-      if (v) {
+      if (v && v !== activeVideo) {
         activeVideo = v;
         attachHUD(v);
+        attachVideoObservers(v);
         executeLiveScan();
       }
     }
-  }, 2500);
+  });
+  activeVideoMutationObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Start the rock-solid continuous scanning loop
+  // Start the continuous scanning loop
   startDetectionLoop();
   createDockPill();
 })();
