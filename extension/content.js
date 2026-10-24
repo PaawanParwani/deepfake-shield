@@ -518,9 +518,42 @@
 
       matchedTrackIds.add(bestMatch.id);
       bestMatch.emotion = mDet.det.emotion || "Focused / Calm 👤";
-      bestMatch.target = { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH };
       bestMatch.verdict = mDet.det.verdict || "authentic";
       bestMatch.confidence = mDet.det.confidence || 100.0;
+
+      // Direct GPU-accelerated CSS positioning (Zero main-thread layout thrashing, 0% CPU)
+      const el = bestMatch.overlayElement;
+      if (el) {
+        el.style.display = "block";
+        el.style.left = `${Math.round(mDet.screenX)}px`;
+        el.style.top = `${Math.round(mDet.screenY)}px`;
+        el.style.width = `${Math.round(mDet.screenW)}px`;
+        el.style.height = `${Math.round(mDet.screenH)}px`;
+        el.style.opacity = "1";
+
+        const nameDisplay = bestMatch.label || "Face";
+        const emotionDisplay = bestMatch.emotion;
+
+        if (bestMatch.verdict === "suspicious") {
+          el.className = "hv-face-overlay hv-suspicious-box";
+          if (bestMatch.tagElement) {
+            bestMatch.tagElement.innerHTML = `
+              <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
+              <span class="hv-tag-verdict hv-v-susp">${bestMatch.confidence}% Risk (Deepfake)</span>
+              <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
+            `;
+          }
+        } else {
+          el.className = "hv-face-overlay";
+          if (bestMatch.tagElement) {
+            bestMatch.tagElement.innerHTML = `
+              <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
+              <span class="hv-tag-verdict hv-v-auth">${bestMatch.confidence}% Real</span>
+              <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
+            `;
+          }
+        }
+      }
     });
 
     // Remove any unmatched faces
@@ -532,6 +565,9 @@
         trackedFaces.delete(id);
       }
     }
+
+    // Keep top HUD position synced
+    updateHUDBadgePosition();
 
     // Floating Top HUD Badge
     const activeList = Array.from(trackedFaces.values());
@@ -557,9 +593,6 @@
       }
     }
 
-    // Start lerp animation loop only when faces are present
-    ensureAnimationRunning();
-
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({
         type: "DETECTION_UPDATE",
@@ -569,80 +602,6 @@
           emotion: primaryEmotion
         }
       }).catch(() => {});
-    }
-  }
-
-  // Smooth lerp animation loop (Only runs when faces are active on screen)
-  function animationLoop() {
-    if (config.enabled && activeVideo && document.body.contains(activeVideo)) {
-      updateHUDBadgePosition();
-
-      if (trackedFaces.size > 0) {
-        for (const [id, face] of trackedFaces.entries()) {
-          const dx = face.target.x - face.current.x;
-          const dy = face.target.y - face.current.y;
-          const dw = face.target.w - face.current.w;
-          const dh = face.target.h - face.current.h;
-
-          // If box jumped across screen (e.g. mirror flip or initial detection), snap immediately
-          if (Math.abs(dx) > 150) {
-            face.current.x = face.target.x;
-            face.current.y = face.target.y;
-            face.current.w = face.target.w;
-            face.current.h = face.target.h;
-          } else {
-            // Smooth lerp (0.42)
-            face.current.x += dx * 0.42;
-            face.current.y += dy * 0.42;
-            face.current.w += dw * 0.42;
-            face.current.h += dh * 0.42;
-          }
-
-          const el = face.overlayElement;
-          if (el) {
-            el.style.display = "block";
-            el.style.left = `${Math.round(face.current.x)}px`;
-            el.style.top = `${Math.round(face.current.y)}px`;
-            el.style.width = `${Math.round(face.current.w)}px`;
-            el.style.height = `${Math.round(face.current.h)}px`;
-            el.style.opacity = "1";
-
-            const nameDisplay = face.label || "Face";
-            const emotionDisplay = face.emotion || "Focused / Calm 👤";
-
-            if (face.verdict === "suspicious") {
-              el.className = "hv-face-overlay hv-suspicious-box";
-              if (face.tagElement) {
-                face.tagElement.innerHTML = `
-                  <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
-                  <span class="hv-tag-verdict hv-v-susp">${face.confidence}% Risk (Deepfake)</span>
-                  <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
-                `;
-              }
-            } else {
-              el.className = "hv-face-overlay";
-              if (face.tagElement) {
-                face.tagElement.innerHTML = `
-                  <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
-                  <span class="hv-tag-verdict hv-v-auth">${face.confidence}% Real</span>
-                  <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
-                `;
-              }
-            }
-          }
-        }
-        animFrameId = requestAnimationFrame(animationLoop);
-        return;
-      }
-    } else {
-      hideHUD();
-    }
-    animFrameId = null;
-  }
-
-  function ensureAnimationRunning() {
-    if (!animFrameId && trackedFaces.size > 0) {
-      animFrameId = requestAnimationFrame(animationLoop);
     }
   }
 
@@ -768,16 +727,24 @@
       if (isDragging) {
         isDragging = false;
         element.classList.remove("hv-dragging");
+        document.removeEventListener("mousemove", onPointerMove);
+        document.removeEventListener("mouseup", onPointerUp);
+        document.removeEventListener("touchmove", onPointerMove);
+        document.removeEventListener("touchend", onPointerUp);
       }
     }
 
-    element.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("mousemove", onPointerMove);
-    document.addEventListener("mouseup", onPointerUp);
+    element.addEventListener("mousedown", (e) => {
+      onPointerDown(e);
+      document.addEventListener("mousemove", onPointerMove);
+      document.addEventListener("mouseup", onPointerUp);
+    });
 
-    element.addEventListener("touchstart", onPointerDown, { passive: false });
-    document.addEventListener("touchmove", onPointerMove, { passive: false });
-    document.addEventListener("touchend", onPointerUp);
+    element.addEventListener("touchstart", (e) => {
+      onPointerDown(e);
+      document.addEventListener("touchmove", onPointerMove, { passive: false });
+      document.addEventListener("touchend", onPointerUp);
+    }, { passive: false });
   }
 
   function updateDockPill() {
@@ -799,16 +766,20 @@
     }
   }
 
-  // Throttled 2-second check for camera connects (no heavy DOM observer)
+  window.addEventListener("resize", updateHUDBadgePosition);
+
+  // Throttled check for camera connects: only runs if activeVideo is disconnected
   setInterval(() => {
     if (document.hidden || !config.enabled) return;
-    const v = findPrimaryVideo();
-    if (v && v !== activeVideo) {
-      activeVideo = v;
-      attachHUD(v);
-      analyzeLiveFrame();
+    if (!activeVideo || !document.body.contains(activeVideo)) {
+      const v = findPrimaryVideo();
+      if (v) {
+        activeVideo = v;
+        attachHUD(v);
+        analyzeLiveFrame();
+      }
     }
-  }, 2000);
+  }, 2500);
 
   // Dynamic Detection Loop (1.0s search, 0.75s locked, 3.5s offline backoff)
   function scheduleNextScan(delayMs) {
