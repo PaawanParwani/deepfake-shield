@@ -26,6 +26,7 @@
   let animFrameId = null;
   let scanTimer = null;
   let consecutiveNoFaceCount = 0;
+  let consecutiveBackendFailures = 0;
 
   // Active Multi-Face Tracking Map: id -> TrackedFace
   const trackedFaces = new Map();
@@ -101,7 +102,7 @@
     if (!vw || !vh || vw < 40 || vh < 40) return null;
 
     try {
-      const maxDim = 360;
+      const maxDim = 280;
       const scale = Math.min(1.0, maxDim / Math.max(vw, vh));
       const targetW = Math.max(160, Math.round(vw * scale));
       const targetH = Math.max(120, Math.round(vh * scale));
@@ -298,17 +299,21 @@
     inFlight = true;
     const reqStart = performance.now();
 
-    // Safety watchdog: 3000ms max
+    // Safety watchdog: 9000ms max (tolerates CPU spikes while keeping service worker responsive)
     const watchdogId = setTimeout(() => {
       if (inFlight) {
         inFlight = false;
-        renderOffline();
+        consecutiveBackendFailures++;
+        if (consecutiveBackendFailures >= 3) {
+          renderOffline();
+        }
       }
-    }, 3000);
+    }, 9000);
 
     function handleSuccess(data) {
       clearTimeout(watchdogId);
       inFlight = false;
+      consecutiveBackendFailures = 0;
       const clientLatency = Math.round(performance.now() - reqStart);
       try {
         processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
@@ -329,8 +334,11 @@
             clearTimeout(watchdogId);
             inFlight = false;
             if (chrome.runtime.lastError || !response || !response.success) {
-              renderOffline();
-              scheduleNextScan(3500); // Back off 3.5s when backend is offline
+              consecutiveBackendFailures++;
+              if (consecutiveBackendFailures >= 3) {
+                renderOffline();
+              }
+              scheduleNextScan(1200);
               return;
             }
             handleSuccess(response.data);
@@ -340,8 +348,11 @@
       } catch (sendErr) {
         clearTimeout(watchdogId);
         inFlight = false;
-        renderOffline();
-        scheduleNextScan(3500);
+        consecutiveBackendFailures++;
+        if (consecutiveBackendFailures >= 3) {
+          renderOffline();
+        }
+        scheduleNextScan(1200);
         return;
       }
     }

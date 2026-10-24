@@ -1710,12 +1710,7 @@ async def predict_frame(
                     "smile_score": emotion_info["smile_score"],
                 })
 
-                # Update physiological tracker on primary face if present
-                if idx == 0 and lm is not None and models.physio_tracker is not None:
-                    try:
-                        models.physio_tracker.update(frame_bgr, lm)
-                    except Exception as p_err:
-                        logger.debug("Physiological update error: %s", p_err)
+                # Focus strictly on video and emotion (no biometrics/rPPG overhead)
 
         return extracted
 
@@ -1900,14 +1895,6 @@ async def predict_frame(
     latency_ms = round((time.time() - start_time) * 1000.0, 1)
 
     bio_data: Optional[Dict[str, Any]] = None
-    if models.physio_tracker is not None and face_detected:
-        try:
-            bio_data = models.physio_tracker.compute_biological_consistency()
-            if models.self_training_buffer is not None and len(valid_face_crops) > 0:
-                p_bio = float(bio_data.get("p_bonafide_bio", 0.5))
-                models.self_training_buffer.add_sample(valid_face_crops[0]["crop"], p_bio=p_bio, p_cnn=max_p_fake)
-        except Exception as b_err:
-            logger.debug("Biological score error: %s", b_err)
 
     primary_emotion = faces_list[0]["emotion"] if faces_list else "Focused / Calm 👤"
 

@@ -62,17 +62,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Native background fetch proxy with circuit breaker: prevents service worker locking
+  // Native background fetch proxy: routes frames cleanly to local backend
   if (message.type === "PREDICT_FRAME") {
-    if (Date.now() < backendDownUntil) {
-      sendResponse({ success: false, error: "Backend offline (throttled)" });
-      return true;
-    }
-
     const { backendUrl, image_base64 } = message.payload || {};
     const targetUrl = sanitizeBackendUrl(backendUrl);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     fetch(`${targetUrl}/predict/frame`, {
       method: "POST",
@@ -86,12 +81,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           throw new Error(`HTTP ${resp.status}`);
         }
         const data = await resp.json();
-        backendDownUntil = 0; // Backend is healthy
         sendResponse({ success: true, data });
       })
       .catch((err) => {
         clearTimeout(timeoutId);
-        backendDownUntil = Date.now() + 3000; // Pause attempts for 3s to prevent spamming
         sendResponse({ success: false, error: err.message });
       });
 
