@@ -3,7 +3,7 @@
 <div align="center">
 
 [![Live Web App](https://img.shields.io/badge/Cloudflare_Pages-Live_Demo-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://deepfake-shield.pages.dev)
-[![Backend API](https://img.shields.io/badge/Render_API-Live_v2.5-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://deepfake-shield-vyaq.onrender.com/health)
+[![Backend API](https://img.shields.io/badge/FastAPI_Backend-Local_Host-46E3B7?style=for-the-badge&logo=fastapi&logoColor=white)](http://localhost:8000/health)
 [![Colab Verification](https://img.shields.io/badge/Open_in-Google_Colab-F9AB00?style=for-the-badge&logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/PaawanParwani/deepfake-shield/blob/main/notebooks/Official_Colab_Training_Verification.ipynb)
 [![Training Proof](https://img.shields.io/badge/Academic_Proof-Verified_91%25+-4CAF50?style=for-the-badge&logo=googledocs&logoColor=white)](docs/COLAB_TRAINING_PROOF.md)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -24,7 +24,7 @@
 | :--- | :--- | :--- |
 | **Gunin** | **Audio AI Track (RNN Audio Training)** | • Trained the recurrent neural network (`Conv1d + Bidirectional GRU`) on the **ASVspoof 2019 LA** benchmark.<br>• Designed audio feature preprocessing (16kHz mono resampling, 80-bin Mel-spectrograms, temporal pooling).<br>• Achieved **93.50% Accuracy**, **0.9586 ROC-AUC**, and **7.50% EER** on synthetic voice and speech synthesis spoof detection.<br>• Conducted training, cosine annealing schedule, and hyperparameter tuning on **Google Colab** T4 GPUs. |
 | **Jai** | **Visual AI Track (CNN Video Face Training)** | • Trained the deep convolutional network (`EfficientNet-B0`) on the **FaceForensics++** dataset.<br>• Handled multi-manipulation benchmarks: Deepfakes, Face2Face, FaceSwap, NeuralTextures, and FaceShifter.<br>• Reached **91.08% Video Accuracy** and **0.9563 AUC** (100% on Deepfakes, DeepFakeDetection, and NeuralTextures, 91.7% on Face2Face).<br>• Engineered test-time augmentation (TTA) and top-70% trimmed video temporal pooling on **Google Colab** T4 GPUs. |
-| **Paawan** | **System Integration & Full-Stack Application** | • Integrated both Gunin's Audio RNN and Jai's Video CNN into a unified multimodal pipeline.<br>• Engineered the **Cross-Attention Multimodal Fusion** network to detect audio-visual synchronization tampering.<br>• Built the real-time **Chrome Extension** for Google Meet, Zoom, and Microsoft Teams live call defense.<br>• Developed the **FastAPI backend** (Render) and the **Frontend Web App** (Cloudflare Pages).<br>• Added **NeuroPulse biological rPPG liveness** tracking and **RAF-DB calibrated emotion heuristics**.<br>• Optimized inference pipeline for memory-constrained cloud environments (RAM $<250\text{ MB}$). |
+| **Paawan** | **System Integration & Full-Stack Application** | • Integrated both Gunin's Audio RNN and Jai's Video CNN into a unified multimodal pipeline.<br>• Engineered the **Cross-Attention Multimodal Fusion** network to detect audio-visual synchronization tampering.<br>• Built the real-time **Chrome Extension** for Google Meet, Zoom, and Microsoft Teams live call defense.<br>• Developed the **FastAPI backend** and the **Frontend Web App** (Cloudflare Pages).<br>• Integrated high-speed **ONNX inference** and **RAF-DB neural emotion classification**.<br>• Optimized inference pipeline for memory-constrained cloud environments (RAM $<250\text{ MB}$). |
 
 ---
 
@@ -159,17 +159,17 @@ Evaluated on speech synthesis and voice conversion spoof attacks:
   - Audio file upload (.wav, .mp3) with spectral voice-clone verdict.
   - Physiological liveness graphs and live emotion badges.
 
-### 2. High-Performance API Backend (Render)
-- **Base URL:** [https://deepfake-shield-vyaq.onrender.com](https://deepfake-shield-vyaq.onrender.com)
-- **RAM Optimization:** Streamlined frame-by-frame memory decoding keeps peak memory below **250 MB**, running reliably under Render's 512 MB free-tier limit.
+### 2. High-Performance API Backend (FastAPI)
+- **Base URL:** `http://localhost:8000`
+- **Inference Speed:** Ultra-fast sub-15ms ONNX video classification and 19.2x real-time audio analysis.
 - **CORS Hardened:** Custom middleware guarantees seamless origin access for Cloudflare Pages and browser extensions.
 
 ### 3. Real-Time Chrome Extension (Google Meet / Zoom / Teams)
 - **Location:** [`extension/`](extension/) (Packaged zip: [`deploy/deepfake-shield-extension.zip`](deploy/deepfake-shield-extension.zip))
 - **Features:**
   - Injects a discrete, real-time Heads-Up Display (HUD) directly into live video calls.
-  - Samples active speaker video elements every 500ms.
-  - Continuously monitors meeting tab audio for cloned voices.
+  - Samples active speaker video elements with sub-pixel optical head tracking.
+  - Continuously monitors meeting tab audio for cloned voices and predicts neural facial affect (RAF-DB).
   - Alerts users instantly if a deepfake or cloned voice is identified in a meeting.
 
 ---
@@ -188,10 +188,9 @@ deepfake-shield/
 │   └── outputs/                # Model checkpoints (best_model.pt) & metrics
 ├── demo/                       # Paawan: Full-Stack Application
 │   ├── backend/                # FastAPI app.py, fusion.py, model loaders
-│   └── frontend/               # Interactive dashboard (index.html)
+│   └── frontend/               # Interactive dashboard (index.html) & visualizer (visualizer.html)
 ├── deploy/                     # Deployment Artifacts & Packages
 │   ├── cloudflare_pages/       # Static assets for Cloudflare Pages
-│   ├── render/                 # Render build scripts & requirements
 │   ├── deepfake-shield-extension.zip       # Packaged Chrome Extension
 │   └── cloudflare_pages_ready_to_upload.zip # Drag-and-drop Cloudflare bundle
 ├── extension/                  # Chrome Extension Source (Manifest V3)
@@ -201,7 +200,6 @@ deepfake-shield/
 │   └── background.js
 ├── docs/                       # Project specifications & architecture docs
 ├── tests/                      # Automated unit & integration tests
-├── render.yaml                 # Render infrastructure-as-code blueprint
 └── requirements.txt            # Python dependencies
 ```
 

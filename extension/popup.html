@@ -69,19 +69,23 @@
         </div>
       </div>
 
-      <!-- Dual Modality Score Breakdown -->
+      <!-- Modality Score Breakdown: Video, Voice, Emotion -->
       <div class="dual-scores" id="dualScores" style="display: none;">
         <div class="score-row">
-          <span class="score-type">📹 Face Synthesis (Video):</span>
+          <span class="score-type">📹 Face Deepfake (Video):</span>
           <span class="score-val authentic" id="videoScore">99.4% Authentic</span>
         </div>
         <div class="score-row">
           <span class="score-type">🎙️ Voice Clone (Audio):</span>
           <span class="score-val authentic" id="audioScore">99.2% Authentic</span>
         </div>
+        <div class="score-row">
+          <span class="score-type">😊 Affect &amp; Emotion:</span>
+          <span class="score-val authentic" id="emotionScore">Focused / Calm 👤</span>
+        </div>
       </div>
 
-      <p class="test-hint" id="testHint">Click 'Start Live Test' to verify your camera & microphone live at 99% accuracy.</p>
+      <p class="test-hint" id="testHint">Click 'Start Live Test' to verify your camera & microphone live across Voice, Video, and Emotion.</p>
     </div>
 
     <!-- Performance & Precision Mode -->
@@ -97,6 +101,8 @@
           <option value="98.5">⚡ High-Efficiency Real-Time (Fast Latency)</option>
         </select>
       </div>
+    </div>
+
     <!-- Backend Endpoint Configuration -->
     <div class="card settings-card" style="padding: 10px 14px;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -109,15 +115,19 @@
       </div>
     </div>
 
-    <!-- Telemetry -->
+    <!-- Telemetry: Video, Audio, Emotion -->
     <div class="card telemetry-card">
       <div class="stat-col">
         <span class="stat-label">Video AI</span>
-        <span class="stat-value">EfficientNet (99% AUC)</span>
+        <span class="stat-value">EfficientNet (91.1%)</span>
       </div>
       <div class="stat-col">
-        <span class="stat-label">Audio AI</span>
-        <span class="stat-value">Wav2Vec2 (ASVspoof)</span>
+        <span class="stat-label">Voice AI</span>
+        <span class="stat-value">ASVspoof (93.5%)</span>
+      </div>
+      <div class="stat-col">
+        <span class="stat-label">Emotion AI</span>
+        <span class="stat-value">RAF-DB (29.6k)</span>
       </div>
     </div>
 

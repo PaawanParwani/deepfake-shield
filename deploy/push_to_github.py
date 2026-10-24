@@ -1,4 +1,4 @@
-"""Helper script to connect and push local git repository to GitHub for Render deployment.
+"""Helper script to connect and push local git repository to GitHub.
 
 Usage:
     python deploy/push_to_github.py
@@ -10,11 +10,11 @@ from pathlib import Path
 
 def main():
     print("=" * 65)
-    print("🚀 Push Deepfake Shield to GitHub (for Render.com)")
+    print("🚀 Push Deepfake Shield to GitHub")
     print("=" * 65)
     print("1. Create a new empty repository at: https://github.com/new")
-    print("   (Repository name: deepfake-meeting-shield)")
-    print("2. Copy your repository HTTPS URL (e.g. https://github.com/USERNAME/deepfake-meeting-shield.git)")
+    print("   (Repository name: deepfake-shield)")
+    print("2. Copy your repository HTTPS URL (e.g. https://github.com/USERNAME/deepfake-shield.git)")
     print("=" * 65)
 
     repo_url = input("\nPaste your GitHub Repository URL: ").strip()
@@ -41,10 +41,7 @@ def main():
             print("\n" + "=" * 65)
             print("🎉 SUCCESSFULLY PUSHED TO GITHUB!")
             print("=" * 65)
-            print("Next step:")
-            print("1. Go to https://dashboard.render.com")
-            print("2. Click 'New +' -> 'Web Service'")
-            print("3. Connect this GitHub repository and select the Free tier!")
+            print("Repository is synced with Cloudflare Pages and local environment.")
             print("=" * 65)
         else:
             print("\n⚠️ Push encountered an issue. Please ensure your GitHub credentials are authenticated.")

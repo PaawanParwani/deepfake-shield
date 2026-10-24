@@ -37,7 +37,7 @@ import yaml
 from PIL import Image
 
 def trim_memory() -> None:
-    """Aggressively release unused heap memory back to OS for 512MB RAM environments (e.g. Render free tier)."""
+    """Aggressively release unused heap memory back to OS for cloud edge environments."""
     gc.collect()
     if sys.platform.startswith("linux"):
         try:
@@ -1024,6 +1024,16 @@ def serve_frontend() -> Any:
     return JSONResponse({"status": "ok", "message": "Human Verification Backend API is running. Open /docs for Swagger."})
 
 
+@app.get("/visualizer", response_class=FileResponse)
+@app.get("/visualizer.html", response_class=FileResponse)
+def serve_visualizer() -> Any:
+    """Serve the interactive forensic model visualizer."""
+    viz_path = Path(__file__).resolve().parent.parent / "frontend" / "visualizer.html"
+    if viz_path.is_file():
+        return FileResponse(viz_path)
+    return JSONResponse({"status": "error", "message": "Visualizer page not found."})
+
+
 @app.get("/favicon.ico")
 def favicon() -> Response:
     """Return 204 No Content for favicon to prevent 404 logs."""
@@ -1135,7 +1145,7 @@ def health_check() -> Dict[str, Any]:
         "emotion_model": "RAF-DB Neural ONNX Classifier" if models.emotion_onnx_session is not None else ("RAF-DB Neural ViT Classifier" if models.emotion_model is not None else "Landmark Heuristics"),
         "emotion_dataset": "RAF-DB (Real-world Affective Faces Database - 29.6k samples)",
         "emotion_status": "ready" if (models.emotion_onnx_session is not None or models.emotion_model is not None) else "fallback",
-        "render_memory_safe": True,
+        "memory_safe": True,
     }
 
 

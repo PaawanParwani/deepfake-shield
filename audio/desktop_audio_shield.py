@@ -37,7 +37,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("AudioShield")
 
-DEFAULT_BACKEND = "https://deepfake-shield-vyaq.onrender.com"
+DEFAULT_BACKEND = "http://localhost:8000"
 SAMPLE_RATE = 16000  # Target rate for deepfake model
 CHUNK_DURATION_SEC = 2.5
 TARGET_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_SEC)

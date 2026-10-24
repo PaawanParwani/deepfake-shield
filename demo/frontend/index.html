@@ -198,6 +198,30 @@
       stroke-width: 2;
     }
 
+    .nav-btn-visualizer {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 15px;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(59, 130, 246, 0.2));
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 9999px;
+      color: #a5b4fc;
+      text-decoration: none;
+      font-size: 0.82rem;
+      font-weight: 600;
+      transition: var(--transition);
+      box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+    }
+
+    .nav-btn-visualizer:hover {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(59, 130, 246, 0.35));
+      border-color: #818cf8;
+      color: #ffffff;
+      transform: translateY(-1px);
+      box-shadow: 0 0 16px rgba(99, 102, 241, 0.4);
+    }
+
     /* Backend Config Bar */
     .config-bar {
       display: none;
@@ -873,20 +897,36 @@
       color: #ffffff;
     }
 
+    .nav-btn-visualizer {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(6, 182, 212, 0.2));
+      border: 1px solid rgba(99, 102, 241, 0.45);
+      border-radius: 9999px;
+      color: #c7d2fe;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-decoration: none;
+      transition: var(--transition);
+    }
+    .nav-btn-visualizer:hover {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(6, 182, 212, 0.35));
+      border-color: rgba(99, 102, 241, 0.8);
+      color: #ffffff;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+    }
+
     .benchmark-ribbon {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 14px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
       margin-bottom: 24px;
     }
 
-    @media (max-width: 1180px) {
-      .benchmark-ribbon {
-        grid-template-columns: repeat(2, 1fr);
-      }
-    }
-
-    @media (max-width: 640px) {
+    @media (max-width: 1040px) {
       .benchmark-ribbon {
         grid-template-columns: 1fr;
       }
@@ -924,10 +964,6 @@
       background: linear-gradient(90deg, #10b981, #06b6d4);
     }
 
-    .benchmark-card.benchmark-bio::before {
-      background: linear-gradient(90deg, #ec4899, #8b5cf6);
-    }
-
     .benchmark-card.benchmark-affect::before {
       background: linear-gradient(90deg, #f59e0b, #ef4444);
     }
@@ -956,12 +992,6 @@
       border: 1px solid rgba(16, 185, 129, 0.35);
     }
 
-    .benchmark-pill-tag.tag-bio {
-      background: rgba(236, 72, 153, 0.2);
-      color: #f472b6;
-      border: 1px solid rgba(236, 72, 153, 0.35);
-    }
-
     .benchmark-pill-tag.tag-affect {
       background: rgba(245, 158, 11, 0.2);
       color: #fbbf24;
@@ -979,7 +1009,7 @@
       align-items: center;
       justify-content: space-around;
       margin-bottom: 12px;
-      padding: 8px 0;
+      padding: 10px 4px;
       background: var(--bg-glass);
       border-radius: var(--radius-sm);
     }
@@ -988,21 +1018,28 @@
       display: flex;
       flex-direction: column;
       align-items: center;
+      flex: 1;
+      min-width: 0;
+      padding: 0 4px;
     }
 
     .bm-num {
-      font-size: 1.35rem;
+      font-size: 1.32rem;
       font-weight: 800;
       letter-spacing: -0.02em;
       color: var(--text-primary);
+      white-space: nowrap;
     }
 
     .bm-lbl {
-      font-size: 0.72rem;
+      font-size: 0.67rem;
       color: var(--text-muted);
       text-transform: uppercase;
       font-weight: 600;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+      text-align: center;
+      margin-top: 2px;
     }
 
     .bm-divider {
@@ -1155,6 +1192,13 @@
           <span id="statusText">Checking backend...</span>
         </div>
 
+        <a href="visualizer.html" class="nav-btn-visualizer" id="btnNavVisualizer" title="Deepfake Model & Neural Architecture Visualizer">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M2 12h5l3-9 4 18 3-9h5"/>
+          </svg>
+          <span>Model Visualizer</span>
+        </a>
+
         <button class="btn-icon" id="btnSettings" title="Configure Backend URL" aria-label="Backend Settings">
           <svg viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="3"/>
@@ -1177,32 +1221,31 @@
       <button type="button" id="btnSaveConfig">Save &amp; Reconnect</button>
     </div>
 
-    <!-- SOTA Real-Time Verification Hero Showcase -->
+    <!-- SOTA Real-Time Verification Hero Showcase (Voice, Video, Emotion) -->
     <section class="sota-hero-banner" aria-label="SOTA Verification Status">
       <div class="sota-banner-top">
         <div class="sota-live-badge">
           <span class="sota-pulse-dot"></span>
-          <span>Verified SOTA • Multimodal Cyber Defense</span>
+          <span>Verified SOTA • Real-Time AI Cyber Defense</span>
         </div>
         <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">
-          Cross-Attention Dual Modality • Sub-15ms Local/Cloud Edge
+          Voice • Video • Facial Affect
         </div>
       </div>
       <div class="sota-banner-headline">
-        <span>Military-Grade Authenticity:</span>
+        <span>Military-Grade Verification:</span>
         <span class="highlight">98.1% Bona Fide Human Confidence</span>
         <span style="color: var(--text-muted); font-weight: 400; font-size: 0.95rem;">(Deepfakes &amp; Voice Clones Neutralized)</span>
       </div>
       <div class="sota-banner-tags">
         <span class="sota-tag">⚡ <strong>10.4ms</strong> Video ONNX (96+ FPS)</span>
         <span class="sota-tag">🎯 <strong>93.5%</strong> ASVspoof Voice Clone Acc</span>
-        <span class="sota-tag">👁️ <strong>91.1%</strong> FF++ Deepfake Precision</span>
-        <span class="sota-tag">💓 <strong>7,358 FPS</strong> NeuroPulse™ Biometrics</span>
-        <span class="sota-tag">🧠 <strong>RAF-DB</strong> Neural Affect (29.6k Samples)</span>
+        <span class="sota-tag">👁️ <strong>91.1%</strong> FaceForensics++ Deepfake Precision</span>
+        <span class="sota-tag">🧠 <strong>RAF-DB</strong> Neural Emotion (29.6k Samples)</span>
       </div>
     </section>
 
-    <!-- Academic Verification & Benchmark Ribbon -->
+    <!-- Academic Verification & Benchmark Ribbon (Voice, Video, Emotion) -->
     <section class="benchmark-ribbon" id="benchmarkRibbon" aria-label="Official Academic Benchmark Results">
       <!-- 1. Video Deepfake Benchmark -->
       <div class="benchmark-card benchmark-video">
@@ -1231,7 +1274,7 @@
           <span class="subpill" title="Deepfakes: 100%">Deepfakes: 100%</span>
           <span class="subpill" title="NeuralTextures: 100%">NeuralTextures: 100%</span>
           <span class="subpill" title="Face2Face: 91.7%">Face2Face: 91.7%</span>
-          <span class="subpill" title="Original Bonafide: 87.0%">Original: 87.0%</span>
+          <span class="subpill" title="Original: 87.0%">Original: 87.0%</span>
           <span class="subpill" title="FaceSwap: 83.3%">FaceSwap: 83.3%</span>
         </div>
       </div>
@@ -1266,40 +1309,10 @@
         </div>
       </div>
 
-      <!-- 3. NeuroPulse Biological Liveness Benchmark -->
-      <div class="benchmark-card benchmark-bio">
-        <div class="benchmark-badge-header">
-          <span class="benchmark-pill-tag tag-bio">BIOMETRICS</span>
-          <span class="benchmark-dataset">NeuroPulse™ Liveness</span>
-        </div>
-        <div class="benchmark-metrics-row">
-          <div class="bm-stat">
-            <span class="bm-num">98.1%</span>
-            <span class="bm-lbl">Authenticity</span>
-          </div>
-          <div class="bm-divider"></div>
-          <div class="bm-stat">
-            <span class="bm-num">7,358</span>
-            <span class="bm-lbl">FPS Coherence</span>
-          </div>
-          <div class="bm-divider"></div>
-          <div class="bm-stat">
-            <span class="bm-num">&lt; 1ms</span>
-            <span class="bm-lbl">Pulse FFT</span>
-          </div>
-        </div>
-        <div class="benchmark-subpills">
-          <span class="subpill">rPPG Blood Flow</span>
-          <span class="subpill">EAR Blink Tracking</span>
-          <span class="subpill">Duchenne FACS</span>
-          <span class="subpill">Zero-Latency Oracle</span>
-        </div>
-      </div>
-
-      <!-- 4. Affective Dynamics Benchmark -->
+      <!-- 3. Affective Dynamics Benchmark -->
       <div class="benchmark-card benchmark-affect">
         <div class="benchmark-badge-header">
-          <span class="benchmark-pill-tag tag-affect">AFFECTIVE AI</span>
+          <span class="benchmark-pill-tag tag-affect">EMOTION SOTA</span>
           <span class="benchmark-dataset">RAF-DB Neural ONNX</span>
         </div>
         <div class="benchmark-metrics-row">
@@ -1310,7 +1323,7 @@
           <div class="bm-divider"></div>
           <div class="bm-stat">
             <span class="bm-num">7</span>
-            <span class="bm-lbl">Universal Affects</span>
+            <span class="bm-lbl">Affect States</span>
           </div>
           <div class="bm-divider"></div>
           <div class="bm-stat">

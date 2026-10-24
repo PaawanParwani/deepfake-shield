@@ -10,7 +10,6 @@
   "host_permissions": [
     "http://127.0.0.1:*/*",
     "http://localhost:*/*",
-    "https://*.onrender.com/*",
     "https://*.loca.lt/*",
     "https://*.trycloudflare.com/*",
     "https://*.ngrok-free.app/*",
@@ -31,13 +30,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://meet.google.com/*",
-        "https://*.zoom.us/*",
-        "https://teams.microsoft.com/*",
-        "https://discord.com/*",
-        "https://*.webex.com/*",
-        "http://localhost:*/*",
-        "http://127.0.0.1:*/*"
+        "<all_urls>"
       ],
       "js": ["content.js"],
       "css": ["content.css"],

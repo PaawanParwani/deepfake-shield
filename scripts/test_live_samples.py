@@ -14,7 +14,7 @@ if sys.stdout.encoding != "utf-8":
     except Exception:
         pass
 
-BACKEND_URL = os.getenv("BACKEND_URL", "https://deepfake-shield-vyaq.onrender.com")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 def post_multipart(url: str, file_path: str, field_name: str) -> dict:
     boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"

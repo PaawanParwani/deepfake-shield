@@ -35,7 +35,7 @@ chrome.runtime.onStartup.addListener(() => {
 // Listen for updates and proxy requests from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "DETECTION_UPDATE") {
-    const { verdict, confidence, p_fake } = message.payload;
+    const { verdict, confidence, p_fake, emotion } = message.payload || {};
     const tabId = sender.tab ? sender.tab.id : undefined;
 
     if (verdict === "suspicious") {
@@ -47,6 +47,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       chrome.action.setBadgeText({ text: "", tabId });
     }
+
+    chrome.storage.local.set({
+      latestMeetingStatus: {
+        verdict: verdict || "authentic",
+        confidence: confidence !== undefined ? confidence : 100.0,
+        emotion: emotion || "Focused / Calm 👤",
+        timestamp: Date.now()
+      }
+    });
 
     sendResponse({ status: "acknowledged" });
     return true;

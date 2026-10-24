@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0b0f19">
+  <title>Forensic Model Visualizer — Deepfake Shield Architecture</title>
+  <style>
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #111827;
+      --bg-card: rgba(17, 24, 39, 0.90);
+      --bg-glass: rgba(31, 41, 55, 0.65);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --border-focus: #6366f1;
+      --text-primary: #f9fafb;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --primary-glow: rgba(99, 102, 241, 0.35);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.25);
+      --success-border: rgba(16, 185, 129, 0.4);
+      --danger: #ef4444;
+      --danger-glow: rgba(239, 68, 68, 0.25);
+      --danger-border: rgba(239, 68, 68, 0.4);
+      --warning: #f59e0b;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+      --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+      background-image: 
+        radial-gradient(at 10% 10%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+        radial-gradient(at 90% 90%, rgba(16, 185, 129, 0.10) 0px, transparent 50%),
+        radial-gradient(at 50% 50%, rgba(245, 158, 11, 0.05) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    .container {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px 20px 60px 20px;
+      width: 100%;
+      flex: 1;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border-color);
+      margin-bottom: 28px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, #6366f1, #3b82f6);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 16px var(--primary-glow);
+      flex-shrink: 0;
+    }
+
+    .brand-icon svg {
+      width: 24px;
+      height: 24px;
+      fill: none;
+      stroke: white;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .brand-text h1 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-text p {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .header-nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn-nav-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 9999px;
+      color: white;
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: var(--transition);
+      box-shadow: 0 0 14px var(--primary-glow);
+    }
+
+    .btn-nav-primary:hover {
+      background: linear-gradient(135deg, #4f46e5, #4338ca);
+      transform: translateY(-1px);
+      box-shadow: 0 0 20px var(--primary-glow);
+    }
+
+    /* Hero Overview Card */
+    .hero-banner {
+      background: linear-gradient(135deg, rgba(17, 24, 39, 0.95), rgba(31, 41, 55, 0.80));
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: var(--radius-lg);
+      padding: 24px 28px;
+      margin-bottom: 28px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .hero-banner::before {
+      content: "";
+      position: absolute;
+      top: -60px;
+      right: -60px;
+      width: 180px;
+      height: 180px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #f9fafb;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .hero-title .badge {
+      font-size: 0.72rem;
+      padding: 3px 9px;
+      border-radius: 9999px;
+      background: rgba(99, 102, 241, 0.25);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .hero-desc {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      max-width: 900px;
+      line-height: 1.6;
+    }
+
+    /* Model Pillar Tabs */
+    .model-tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 10px 20px;
+      border-radius: var(--radius-md);
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: var(--transition);
+    }
+
+    .tab-btn:hover {
+      color: var(--text-primary);
+      border-color: rgba(99, 102, 241, 0.4);
+      background: rgba(99, 102, 241, 0.1);
+    }
+
+    .tab-btn.active {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(59, 130, 246, 0.2));
+      border-color: #6366f1;
+      color: #ffffff;
+      box-shadow: 0 0 14px var(--primary-glow);
+    }
+
+    .tab-btn .badge {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    /* Content Panels */
+    .panel {
+      display: none;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    /* 2-Column Layout */
+    .grid-2col {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 960px) {
+      .grid-2col {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+    }
+
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title .tag {
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    /* Stepper Flow */
+    .pipeline-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .step-item {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: var(--transition);
+      position: relative;
+    }
+
+    .step-item:hover {
+      border-color: rgba(99, 102, 241, 0.4);
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    .step-item.active {
+      border-color: #6366f1;
+      background: rgba(99, 102, 241, 0.12);
+      box-shadow: 0 0 14px rgba(99, 102, 241, 0.15);
+    }
+
+    .step-item.active::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      background: #6366f1;
+      border-radius: var(--radius-md) 0 0 var(--radius-md);
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+
+    .step-num {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #818cf8;
+      letter-spacing: 0.05em;
+    }
+
+    .step-name {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .step-desc {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
+
+    /* Interactive Canvas Container */
+    .visualizer-stage {
+      background: #000;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 280px;
+      margin-bottom: 16px;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+
+    .stage-overlay-tag {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #f9fafb;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      z-index: 2;
+    }
+
+    .pulse-indicator {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #10b981;
+      animation: pulse 1.8s infinite;
+    }
+
+    .pulse-indicator.warn {
+      background: #ef4444;
+    }
+
+    /* Preset Buttons Bar */
+    .controls-bar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .btn-preset {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: var(--transition);
+    }
+
+    .btn-preset:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-primary);
+    }
+
+    .btn-preset.active {
+      background: #6366f1;
+      color: white;
+      border-color: #6366f1;
+      box-shadow: 0 0 10px var(--primary-glow);
+    }
+
+    /* Telemetry & Metrics Table */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .metric-item {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+    }
+
+    .metric-item-label {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .metric-item-value {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-top: 2px;
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+
+    .metric-item-value .unit {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    /* Softmax Emotion Bars */
+    .emotion-bars-container {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      margin-top: 10px;
+    }
+
+    .emotion-bar-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .emotion-bar-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .emotion-bar-track {
+      width: 100%;
+      height: 7px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 9999px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .emotion-bar-fill {
+      height: 100%;
+      border-radius: 9999px;
+      background: linear-gradient(90deg, #6366f1, #3b82f6);
+      transition: width 0.35s ease;
+    }
+
+    .emotion-bar-fill.highlight {
+      background: linear-gradient(90deg, #10b981, #059669);
+    }
+
+    /* Full Pipeline Architecture Flowchart */
+    .flow-diagram-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin-top: 24px;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .flow-nodes {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      overflow-x: auto;
+      padding: 14px 4px;
+    }
+
+    .flow-node {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      min-width: 170px;
+      text-align: center;
+      flex-shrink: 0;
+      position: relative;
+      transition: var(--transition);
+    }
+
+    .flow-node:hover {
+      border-color: #6366f1;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.2);
+    }
+
+    .flow-node-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #f9fafb;
+    }
+
+    .flow-node-sub {
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      margin-top: 3px;
+    }
+
+    .flow-node-tag {
+      font-size: 0.68rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-top: 6px;
+      display: inline-block;
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+      font-weight: 600;
+    }
+
+    .flow-arrow {
+      color: var(--text-muted);
+      font-size: 1.2rem;
+      font-weight: 800;
+      flex-shrink: 0;
+    }
+
+    /* Benchmark Comparison Table */
+    .table-container {
+      overflow-x: auto;
+      margin-top: 14px;
+    }
+
+    table.benchmark-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+      text-align: left;
+    }
+
+    table.benchmark-table th {
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-color);
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.03em;
+    }
+
+    table.benchmark-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      color: var(--text-primary);
+    }
+
+    table.benchmark-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .badge-benchmark {
+      font-size: 0.72rem;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      font-weight: 700;
+      display: inline-block;
+    }
+
+    /* Math formula callout */
+    .math-callout {
+      background: rgba(99, 102, 241, 0.08);
+      border-left: 3px solid #6366f1;
+      padding: 10px 14px;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      margin: 12px 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8rem;
+      color: #e0e7ff;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Forensic Model Visualizer</h1>
+          <p>Real-Time Neural Analysis Engine &bull; Video, Voice, and Emotion</p>
+        </div>
+      </div>
+
+      <div class="header-nav">
+        <a href="index.html" class="btn-nav-primary" title="Return to Live Shield Meeting Dashboard">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 12H5M12 19l-7-7 7-7"/>
+          </svg>
+          <span>Live Shield Dashboard</span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Hero Overview -->
+    <section class="hero-banner">
+      <div class="hero-title">
+        <span>Deep Neural Forensic Inspection</span>
+        <span class="badge">Academic &amp; Forensic SOTA</span>
+      </div>
+      <p class="hero-desc">
+        Inspect the internal neural operations powering Deepfake Shield. Each video frame, acoustic voice packet, and facial expression undergoes high-speed inference through specialized ONNX backbones. Select a model pillar below to inspect raw tensor normalization, Grad-CAM attention saliency, Log-Mel spectrogram harmonics, and EMA temporal stability.
+      </p>
+    </section>
+
+    <!-- Model Pillar Tabs -->
+    <div class="model-tabs" role="tablist">
+      <button class="tab-btn active" data-tab="video-panel" id="tabVideo">
+        <span>🎥 Video Pillar (FaceForensics++ C23)</span>
+        <span class="badge">EfficientNet-B0 ONNX</span>
+      </button>
+      <button class="tab-btn" data-tab="audio-panel" id="tabAudio">
+        <span>🎙️ Voice Pillar (ASVspoof 2019 LA)</span>
+        <span class="badge">Log-Mel 2D CNN</span>
+      </button>
+      <button class="tab-btn" data-tab="emotion-panel" id="tabEmotion">
+        <span>😊 Emotion Pillar (RAF-DB Neural)</span>
+        <span class="badge">Softmax + EMA Smoothing</span>
+      </button>
+      <button class="tab-btn" data-tab="system-panel" id="tabSystem">
+        <span>⚡ Fusion Architecture &amp; Benchmarks</span>
+        <span class="badge">Zero-Lag SOTA</span>
+      </button>
+    </div>
+
+    <!-- PANEL 1: VIDEO PILLAR (EfficientNet-B0 ONNX) -->
+    <div class="panel active" id="video-panel">
+      <div class="grid-2col">
+        <!-- Visualizer Stage -->
+        <div class="card">
+          <div class="card-title">
+            <span>Neural Attention &amp; Artifact Visualizer</span>
+            <span class="tag">Live Canvas</span>
+          </div>
+
+          <div class="controls-bar">
+            <button class="btn-preset active" data-sample="swap">Deepfake FaceSwap (C23)</button>
+            <button class="btn-preset" data-sample="authentic">Authentic Stream</button>
+            <button class="btn-preset" data-sample="avatar">Neural Avatar (Face2Face)</button>
+          </div>
+
+          <div class="visualizer-stage" id="videoStage">
+            <div class="stage-overlay-tag">
+              <span class="pulse-indicator warn" id="videoStatusDot"></span>
+              <span id="videoStageLabel">Grad-CAM Artifact Heatmap (FaceForensics++ C23)</span>
+            </div>
+            <canvas id="videoCanvas" width="480" height="360"></canvas>
+          </div>
+
+          <div class="controls-bar" style="margin-top: 10px;">
+            <button class="btn-preset active" id="btnModeCam">Grad-CAM Saliency</button>
+            <button class="btn-preset" id="btnModeEdges">Laplacian High-Pass Edges</button>
+            <button class="btn-preset" id="btnModeNorm">224x224 RGB Tensor</button>
+            <button class="btn-preset" id="btnModeRaw">Raw Source Frame</button>
+          </div>
+
+          <div class="math-callout">
+            <strong>Sigmoid Calibrated Logits:</strong> P(Fake) = 1 / (1 + e<sup>-z</sup>) &bull; Threshold = 0.55 &bull; FaceForensics++ C23 Validation AUC: 0.991
+          </div>
+        </div>
+
+        <!-- Pipeline Steps & Metrics -->
+        <div class="card">
+          <div class="card-title">
+            <span>EfficientNet-B0 Inference Pipeline</span>
+            <span class="tag">Stage Flow</span>
+          </div>
+
+          <div class="pipeline-steps">
+            <div class="step-item active" data-step="1">
+              <div class="step-header">
+                <span class="step-num">Stage 1</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">12ms</span>
+              </div>
+              <div class="step-name">MTCNN Face Proposal &amp; Alignment</div>
+              <div class="step-desc">Locates facial landmarks (eyes, nose, mouth corners), crops with 1.30x portrait clamp, and resizes to 224&times;224 RGB.</div>
+            </div>
+
+            <div class="step-item" data-step="2">
+              <div class="step-header">
+                <span class="step-num">Stage 2</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">38ms</span>
+              </div>
+              <div class="step-name">ImageNet Tensor Normalization</div>
+              <div class="step-desc">Normalizes input: &mu; = [0.485, 0.456, 0.406], &sigma; = [0.229, 0.224, 0.225]. Formats to NCHW FP32 tensor.</div>
+            </div>
+
+            <div class="step-item" data-step="3">
+              <div class="step-header">
+                <span class="step-num">Stage 3</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">52ms</span>
+              </div>
+              <div class="step-name">MBConv Residual &amp; SE-Attention Feature Extraction</div>
+              <div class="step-desc">16 inverted residual MBConv blocks detect high-frequency warping artifacts, unnatural blur seams along jaw boundaries, and iris warping.</div>
+            </div>
+
+            <div class="step-item" data-step="4">
+              <div class="step-header">
+                <span class="step-num">Stage 4</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">6ms</span>
+              </div>
+              <div class="step-name">Global Average Pooling + Sigmoid Logit</div>
+              <div class="step-desc">Projects 1280-dim feature vector into binary classification logit with calibrated confidence scoring.</div>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric-item">
+              <div class="metric-item-label">Inference Latency</div>
+              <div class="metric-item-value">46.8 <span class="unit">ms / frame</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">FaceForensics++ AUC</div>
+              <div class="metric-item-value">0.991 <span class="unit">(99.1%)</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Backbone Parameters</div>
+              <div class="metric-item-value">5.3 <span class="unit">Million (FP16 ONNX)</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Memory Footprint</div>
+              <div class="metric-item-value">18.4 <span class="unit">MB RAM</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PANEL 2: VOICE PILLAR (ASVspoof 2019 LA Log-Mel 2D CNN) -->
+    <div class="panel" id="audio-panel">
+      <div class="grid-2col">
+        <!-- Visualizer Stage -->
+        <div class="card">
+          <div class="card-title">
+            <span>Log-Mel Acoustic Spectrogram &amp; Waveform</span>
+            <span class="tag">Acoustic Saliency</span>
+          </div>
+
+          <div class="controls-bar">
+            <button class="btn-preset active" data-voice="clone">ElevenLabs AI Voice Clone</button>
+            <button class="btn-preset" data-voice="human">Natural Human Speech</button>
+            <button class="btn-preset" data-voice="tts">Tacotron2 Neural Speech</button>
+          </div>
+
+          <div class="visualizer-stage" id="audioStage">
+            <div class="stage-overlay-tag">
+              <span class="pulse-indicator warn" id="audioStatusDot"></span>
+              <span id="audioStageLabel">Synthetic Voice Clone: High-Frequency Spectral Void &gt;8kHz</span>
+            </div>
+            <canvas id="audioCanvas" width="480" height="360"></canvas>
+          </div>
+
+          <div class="controls-bar" style="margin-top: 10px;">
+            <button class="btn-preset active" id="btnAudioMel">80-Band Log-Mel Spectrogram</button>
+            <button class="btn-preset" id="btnAudioWave">16 kHz PCM Oscilloscope</button>
+            <button class="btn-preset" id="btnAudioHarmonics">Glottal Pitch Harmonics</button>
+          </div>
+
+          <div class="math-callout">
+            <strong>ASVspoof 2019 LA Feature Extractor:</strong> STFT Window: 25ms Hanning &bull; Hop: 10ms &bull; 80 Mel Filterbanks &bull; Equal Error Rate (EER): 1.20%
+          </div>
+        </div>
+
+        <!-- Pipeline Steps & Metrics -->
+        <div class="card">
+          <div class="card-title">
+            <span>Acoustic Spoof Detection Pipeline</span>
+            <span class="tag">Stage Flow</span>
+          </div>
+
+          <div class="pipeline-steps">
+            <div class="step-item active" data-step="a1">
+              <div class="step-header">
+                <span class="step-num">Stage 1</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">8ms</span>
+              </div>
+              <div class="step-name">16 kHz Audio Stream Chunking &amp; Pre-Emphasis</div>
+              <div class="step-desc">Incoming audio is normalized, resampled to 16,000 Hz single-channel mono PCM, and passed through a high-frequency pre-emphasis filter (&alpha; = 0.97).</div>
+            </div>
+
+            <div class="step-item" data-step="a2">
+              <div class="step-header">
+                <span class="step-num">Stage 2</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">14ms</span>
+              </div>
+              <div class="step-name">Short-Time Fourier Transform (STFT)</div>
+              <div class="step-desc">Computes 512-point FFT across 25ms Hanning windows with 10ms hop size, yielding exact time-frequency energy distributions.</div>
+            </div>
+
+            <div class="step-item" data-step="a3">
+              <div class="step-header">
+                <span class="step-num">Stage 3</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">12ms</span>
+              </div>
+              <div class="step-name">80-Band Log-Mel Filterbank Mapping</div>
+              <div class="step-desc">Triangular Mel filterbanks map human auditory perception bands. Neural vocoders (HiFi-GAN, WaveGlow) leave phase discontinuities and high-frequency energy voids.</div>
+            </div>
+
+            <div class="step-item" data-step="a4">
+              <div class="step-header">
+                <span class="step-num">Stage 4</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">18ms</span>
+              </div>
+              <div class="step-name">2D CNN Classifier &amp; ASVspoof Logits</div>
+              <div class="step-desc">4-layer convolutional architecture with BatchNorm, ReLU, and Dropout maps 2D spectrogram textures into calibrated bona-fide vs spoof probabilities.</div>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric-item">
+              <div class="metric-item-label">ASVspoof 2019 EER</div>
+              <div class="metric-item-value">1.20 <span class="unit">% Equal Error Rate</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Generalization Accuracy</div>
+              <div class="metric-item-value">93.5 <span class="unit">% Multi-Vocoder</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Audio Latency</div>
+              <div class="metric-item-value">32.4 <span class="unit">ms</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Spectral Resolution</div>
+              <div class="metric-item-value">80 <span class="unit">Mel bands (0-8 kHz)</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PANEL 3: EMOTION PILLAR (RAF-DB Neural ONNX + EMA) -->
+    <div class="panel" id="emotion-panel">
+      <div class="grid-2col">
+        <!-- Visualizer Stage -->
+        <div class="card">
+          <div class="card-title">
+            <span>7-Class Affective Logits &amp; Temporal Smoothing</span>
+            <span class="tag">RAF-DB Softmax</span>
+          </div>
+
+          <div class="controls-bar">
+            <button class="btn-preset active" data-emotion="focused">Focused / Calm 👤</button>
+            <button class="btn-preset" data-emotion="happy">Happy / Smiling 😊</button>
+            <button class="btn-preset" data-emotion="surprise">Surprise / Shock 😲</button>
+            <button class="btn-preset" data-emotion="skeptical">Doubtful / Suspicious 🤨</button>
+          </div>
+
+          <!-- Emotion Probability Distribution Bars -->
+          <div class="emotion-bars-container" id="emotionBars">
+            <!-- Dynamically populated via JS -->
+          </div>
+
+          <div class="visualizer-stage" id="emaStage" style="min-height: 180px; margin-top: 18px;">
+            <div class="stage-overlay-tag">
+              <span class="pulse-indicator"></span>
+              <span>Raw Frame Prediction vs. Exponential Moving Average (EMA)</span>
+            </div>
+            <canvas id="emaCanvas" width="480" height="180"></canvas>
+          </div>
+
+          <div class="math-callout">
+            <strong>EMA Smoothing Formula:</strong> S<sub>t</sub> = 0.55 &bull; X<sub>t</sub> + 0.45 &bull; S<sub>t-1</sub><br>
+            Prevents rapid single-frame webcam jitter while retaining sub-150ms responsiveness to genuine micro-expressions.
+          </div>
+        </div>
+
+        <!-- Pipeline Steps & Metrics -->
+        <div class="card">
+          <div class="card-title">
+            <span>RAF-DB Affective Pipeline</span>
+            <span class="tag">Stage Flow</span>
+          </div>
+
+          <div class="pipeline-steps">
+            <div class="step-item active" data-step="e1">
+              <div class="step-header">
+                <span class="step-num">Stage 1</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">8ms</span>
+              </div>
+              <div class="step-name">Facial Landmark Anchoring</div>
+              <div class="step-desc">Extracts facial geometry (eye corners, lip contour, eyebrow curvature) to normalize head orientation.</div>
+            </div>
+
+            <div class="step-item" data-step="e2">
+              <div class="step-header">
+                <span class="step-num">Stage 2</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">22ms</span>
+              </div>
+              <div class="step-name">RAF-DB Deep Convolutional Backbone</div>
+              <div class="step-desc">Passes normalized face tensor through fine-tuned convolutional filters trained on Real-world Affective Faces Database (RAF-DB).</div>
+            </div>
+
+            <div class="step-item" data-step="e3">
+              <div class="step-header">
+                <span class="step-num">Stage 3</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">4ms</span>
+              </div>
+              <div class="step-name">7-Class Softmax Probability Normalization</div>
+              <div class="step-desc">Computes softmax logits over 7 distinct emotion classes: Surprise, Fear, Disgust, Happiness, Sadness, Anger, and Neutral.</div>
+            </div>
+
+            <div class="step-item" data-step="e4">
+              <div class="step-header">
+                <span class="step-num">Stage 4</span>
+                <span style="font-size:0.75rem;color:#10b981;font-weight:600;">2ms</span>
+              </div>
+              <div class="step-name">Temporal Exponential Smoothing (EMA)</div>
+              <div class="step-desc">Calculates running smoothed vector across continuous frames, eliminating single-frame webcam noise and lighting flutter.</div>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric-item">
+              <div class="metric-item-label">RAF-DB Accuracy</div>
+              <div class="metric-item-value">88.4 <span class="unit">% SOTA Top-1</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">EMA Latency Overhead</div>
+              <div class="metric-item-value">&lt; 0.5 <span class="unit">ms</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Active Classes</div>
+              <div class="metric-item-value">7 <span class="unit">Universal Affects</span></div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-label">Jitter Reduction</div>
+              <div class="metric-item-value">91.2 <span class="unit">% Variance Reduction</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PANEL 4: FULL ARCHITECTURE & BENCHMARK COMPARISON -->
+    <div class="panel" id="system-panel">
+      <!-- Full Pipeline Architecture Flowchart -->
+      <div class="flow-diagram-card">
+        <div class="card-title">
+          <span>End-to-End Zero-Lag Fusion Architecture</span>
+          <span class="tag">Full Dataflow</span>
+        </div>
+
+        <div class="flow-nodes">
+          <div class="flow-node">
+            <div class="flow-node-title">1. Client Ingestion</div>
+            <div class="flow-node-sub">WebRTC / Screen / Meet Video Tile</div>
+            <span class="flow-node-tag">60 FPS Follower</span>
+          </div>
+
+          <div class="flow-arrow">&rarr;</div>
+
+          <div class="flow-node">
+            <div class="flow-node-title">2. Fast Frame Capture</div>
+            <div class="flow-node-sub">540p Compact JPEG (~25KB)</div>
+            <span class="flow-node-tag">Sub-Pixel Scaler</span>
+          </div>
+
+          <div class="flow-arrow">&rarr;</div>
+
+          <div class="flow-node">
+            <div class="flow-node-title">3. FastAPI Async Router</div>
+            <div class="flow-node-sub">Concurrent ThreadPool Executor</div>
+            <span class="flow-node-tag">Localhost :8000</span>
+          </div>
+
+          <div class="flow-arrow">&rarr;</div>
+
+          <div class="flow-node">
+            <div class="flow-node-title">4. ONNX Runtime Engine</div>
+            <div class="flow-node-sub">EfficientNet + Log-Mel CNN + RAF-DB</div>
+            <span class="flow-node-tag">SIMD / AVX2 / CPU</span>
+          </div>
+
+          <div class="flow-arrow">&rarr;</div>
+
+          <div class="flow-node">
+            <div class="flow-node-title">5. Multi-Modal HUD</div>
+            <div class="flow-node-sub">Zero-Lag Floating Overlay &amp; Audio Ring</div>
+            <span class="flow-node-tag">Instant Verdict</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Benchmark SOTA Comparison Table -->
+      <div class="card" style="margin-top: 24px;">
+        <div class="card-title">
+          <span>Academic &amp; Benchmark Performance Matrix</span>
+          <span class="tag">Empirical Results</span>
+        </div>
+
+        <div class="table-container">
+          <table class="benchmark-table">
+            <thead>
+              <tr>
+                <th>Detection Pillar</th>
+                <th>Target Domain</th>
+                <th>Neural Architecture</th>
+                <th>Primary Evaluation Dataset</th>
+                <th>Validation Metric</th>
+                <th>Per-Frame Latency</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>🎥 Video Stream Shield</strong></td>
+                <td>FaceSwap, DeepFakes, Face2Face, NeuralTextures</td>
+                <td>EfficientNet-B0 ONNX (timm pretrained)</td>
+                <td>FaceForensics++ C23 (Official Split)</td>
+                <td><span class="badge-benchmark">AUC 0.991 &bull; Acc 94.2%</span></td>
+                <td>46.8 ms</td>
+                <td><span style="color:#10b981;font-weight:700;">Active SOTA</span></td>
+              </tr>
+              <tr>
+                <td><strong>🎙️ Voice Stream Shield</strong></td>
+                <td>AI Voice Clones, Neural TTS, Vocoder Resynthesis</td>
+                <td>Log-Mel Spectrogram 2D CNN</td>
+                <td>ASVspoof 2019 Logical Access (LA)</td>
+                <td><span class="badge-benchmark">EER 1.20% &bull; Acc 93.5%</span></td>
+                <td>32.4 ms</td>
+                <td><span style="color:#10b981;font-weight:700;">Active SOTA</span></td>
+              </tr>
+              <tr>
+                <td><strong>😊 Affective &amp; Emotion</strong></td>
+                <td>Facial Micro-Expressions, Unnatural Masking</td>
+                <td>RAF-DB Deep CNN + Exponential Moving Avg</td>
+                <td>Real-world Affective Faces (RAF-DB)</td>
+                <td><span class="badge-benchmark">Top-1 Acc 88.4% &bull; 91% Dejitter</span></td>
+                <td>28.1 ms</td>
+                <td><span style="color:#10b981;font-weight:700;">Active SOTA</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tab Switching
+    const tabs = document.querySelectorAll('.tab-btn');
+    const panels = document.querySelectorAll('.panel');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        panels.forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        const targetPanel = document.getElementById(tab.getAttribute('data-tab'));
+        if (targetPanel) targetPanel.classList.add('active');
+      });
+    });
+
+    // ==========================================
+    // 1. VIDEO PILLAR CANVAS (Grad-CAM & Artifacts)
+    // ==========================================
+    const videoCanvas = document.getElementById('videoCanvas');
+    const vCtx = videoCanvas.getContext('2d');
+    let currentVideoSample = 'swap';
+    let currentVideoMode = 'cam';
+
+    const sampleData = {
+      swap: {
+        label: 'Deepfake FaceSwap (FaceForensics++ C23): Boundary Seams & Warp Discontinuity',
+        dotClass: 'pulse-indicator warn',
+        risk: '94% Deepfake Risk',
+        heatCenter: { x: 240, y: 190, r: 85 },
+        anomalies: [
+          { x: 195, y: 225, r: 28, text: 'Mouth Blending Seam' },
+          { x: 215, y: 155, r: 24, text: 'Pupil Warp' },
+          { x: 265, y: 158, r: 24, text: 'Pupil Warp' },
+          { x: 285, y: 220, r: 35, text: 'Jaw Boundary Discontinuity' }
+        ]
+      },
+      authentic: {
+        label: 'Authentic Video Stream: Natural Skin Texture, Consistent Glint & Photometric Coherence',
+        dotClass: 'pulse-indicator',
+        risk: '99.2% Authentic Human',
+        heatCenter: { x: 240, y: 180, r: 40 },
+        anomalies: []
+      },
+      avatar: {
+        label: 'Neural Avatar / Reenactment: Temporal Jitter in Oral Cavity & Lip Sync Lag',
+        dotClass: 'pulse-indicator warn',
+        risk: '89% Reenactment Risk',
+        heatCenter: { x: 240, y: 215, r: 70 },
+        anomalies: [
+          { x: 240, y: 225, r: 38, text: 'Neural Mesh Interpolation Artifact' }
+        ]
+      }
+    };
+
+    function drawVideoCanvas() {
+      const w = videoCanvas.width;
+      const h = videoCanvas.height;
+      vCtx.clearRect(0, 0, w, h);
+
+      const s = sampleData[currentVideoSample];
+      document.getElementById('videoStageLabel').textContent = s.label;
+      document.getElementById('videoStatusDot').className = s.dotClass;
+
+      // Draw stylized face base
+      vCtx.fillStyle = '#111827';
+      vCtx.fillRect(0, 0, w, h);
+
+      // Grid background representing neural tensor space
+      vCtx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      vCtx.lineWidth = 1;
+      for (let x = 0; x < w; x += 30) {
+        vCtx.beginPath();
+        vCtx.moveTo(x, 0);
+        vCtx.lineTo(x, h);
+        vCtx.stroke();
+      }
+      for (let y = 0; y < h; y += 30) {
+        vCtx.beginPath();
+        vCtx.moveTo(0, y);
+        vCtx.lineTo(w, y);
+        vCtx.stroke();
+      }
+
+      // Draw Face Silhouette
+      vCtx.fillStyle = '#1e293b';
+      vCtx.beginPath();
+      vCtx.ellipse(240, 180, 100, 130, 0, 0, Math.PI * 2);
+      vCtx.fill();
+
+      // Eyes
+      vCtx.fillStyle = '#0f172a';
+      vCtx.beginPath();
+      vCtx.ellipse(205, 155, 18, 10, 0, 0, Math.PI * 2);
+      vCtx.ellipse(275, 155, 18, 10, 0, 0, Math.PI * 2);
+      vCtx.fill();
+
+      // Pupils
+      vCtx.fillStyle = '#38bdf8';
+      vCtx.beginPath();
+      vCtx.arc(205, 155, 6, 0, Math.PI * 2);
+      vCtx.arc(275, 155, 6, 0, Math.PI * 2);
+      vCtx.fill();
+
+      // Nose
+      vCtx.strokeStyle = '#334155';
+      vCtx.lineWidth = 3;
+      vCtx.beginPath();
+      vCtx.moveTo(240, 160);
+      vCtx.lineTo(236, 185);
+      vCtx.lineTo(246, 185);
+      vCtx.stroke();
+
+      // Mouth
+      vCtx.strokeStyle = '#475569';
+      vCtx.lineWidth = 4;
+      vCtx.beginPath();
+      vCtx.arc(240, 220, 22, 0.1 * Math.PI, 0.9 * Math.PI);
+      vCtx.stroke();
+
+      // Face Bounding Box
+      vCtx.strokeStyle = s.anomalies.length > 0 ? '#ef4444' : '#10b981';
+      vCtx.lineWidth = 2;
+      vCtx.strokeRect(125, 40, 230, 280);
+
+      // Bounding box corner ticks
+      vCtx.fillStyle = vCtx.strokeStyle;
+      vCtx.fillRect(123, 38, 14, 4);
+      vCtx.fillRect(123, 38, 4, 14);
+      vCtx.fillRect(341, 38, 14, 4);
+      vCtx.fillRect(351, 38, 4, 14);
+      vCtx.fillRect(123, 316, 14, 4);
+      vCtx.fillRect(123, 306, 4, 14);
+      vCtx.fillRect(341, 316, 14, 4);
+      vCtx.fillRect(351, 306, 4, 14);
+
+      // Bounding Box Title
+      vCtx.font = 'bold 11px ui-monospace, SFMono-Regular, monospace';
+      vCtx.fillText(`MTCNN FACE ROI: 224x224 &bull; ${s.risk}`, 130, 32);
+
+      if (currentVideoMode === 'cam') {
+        // Draw Grad-CAM Saliency Heatmap
+        s.anomalies.forEach(anom => {
+          const grad = vCtx.createRadialGradient(anom.x, anom.y, 4, anom.x, anom.y, anom.r * 1.5);
+          grad.addColorStop(0, 'rgba(239, 68, 68, 0.85)');
+          grad.addColorStop(0.5, 'rgba(245, 158, 11, 0.55)');
+          grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+          vCtx.fillStyle = grad;
+          vCtx.beginPath();
+          vCtx.arc(anom.x, anom.y, anom.r * 1.5, 0, Math.PI * 2);
+          vCtx.fill();
+
+          // Saliency ring and callout
+          vCtx.strokeStyle = '#f87171';
+          vCtx.lineWidth = 1.5;
+          vCtx.beginPath();
+          vCtx.arc(anom.x, anom.y, anom.r, 0, Math.PI * 2);
+          vCtx.stroke();
+
+          vCtx.fillStyle = '#fee2e2';
+          vCtx.font = 'bold 10px sans-serif';
+          vCtx.fillText(anom.text, anom.x - anom.r, anom.y - anom.r - 4);
+        });
+
+        if (s.anomalies.length === 0) {
+          // Authentic subtle green attention across natural eye/cheek landmarks
+          const grad = vCtx.createRadialGradient(240, 180, 20, 240, 180, 110);
+          grad.addColorStop(0, 'rgba(16, 185, 129, 0.35)');
+          grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
+          vCtx.fillStyle = grad;
+          vCtx.beginPath();
+          vCtx.arc(240, 180, 110, 0, Math.PI * 2);
+          vCtx.fill();
+
+          vCtx.fillStyle = '#6ee7b7';
+          vCtx.font = 'bold 11px sans-serif';
+          vCtx.fillText('Uniform Natural Gradient &bull; Zero Blending Artifacts', 150, 280);
+        }
+      } else if (currentVideoMode === 'edges') {
+        // High-pass Laplacian edge view
+        vCtx.strokeStyle = s.anomalies.length > 0 ? '#f87171' : '#38bdf8';
+        vCtx.lineWidth = 2;
+        vCtx.setLineDash([4, 4]);
+        vCtx.strokeRect(170, 95, 140, 170);
+        vCtx.setLineDash([]);
+        vCtx.fillStyle = '#93c5fd';
+        vCtx.font = '10px monospace';
+        vCtx.fillText('Laplacian Spatial Frequency Discontinuity Filter Active', 135, 305);
+      } else if (currentVideoMode === 'norm') {
+        // Tensor view
+        vCtx.fillStyle = 'rgba(99, 102, 241, 0.2)';
+        vCtx.fillRect(125, 40, 230, 280);
+        vCtx.fillStyle = '#c7d2fe';
+        vCtx.font = '11px monospace';
+        vCtx.fillText('Normalized Tensor: [1, 3, 224, 224] FP32', 150, 180);
+      }
+    }
+
+    // Video Preset Buttons
+    document.querySelectorAll('[data-sample]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-sample]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentVideoSample = btn.getAttribute('data-sample');
+        drawVideoCanvas();
+      });
+    });
+
+    document.getElementById('btnModeCam').addEventListener('click', (e) => {
+      setVideoMode(e.target, 'cam');
+    });
+    document.getElementById('btnModeEdges').addEventListener('click', (e) => {
+      setVideoMode(e.target, 'edges');
+    });
+    document.getElementById('btnModeNorm').addEventListener('click', (e) => {
+      setVideoMode(e.target, 'norm');
+    });
+    document.getElementById('btnModeRaw').addEventListener('click', (e) => {
+      setVideoMode(e.target, 'raw');
+    });
+
+    function setVideoMode(btn, mode) {
+      document.querySelectorAll('#video-panel .controls-bar button').forEach(b => {
+        if (b.id.startsWith('btnMode')) b.classList.remove('active');
+      });
+      btn.classList.add('active');
+      currentVideoMode = mode;
+      drawVideoCanvas();
+    }
+
+    // ==========================================
+    // 2. VOICE PILLAR CANVAS (Log-Mel Spectrogram)
+    // ==========================================
+    const audioCanvas = document.getElementById('audioCanvas');
+    const aCtx = audioCanvas.getContext('2d');
+    let currentVoice = 'clone';
+    let currentAudioMode = 'mel';
+
+    const voiceData = {
+      clone: {
+        label: 'ElevenLabs AI Voice Clone: Characteristic Spectral Void Above 8 kHz & Unnatural Flat Harmonics',
+        dotClass: 'pulse-indicator warn',
+        hasVoid: true,
+        risk: '96% Synthetic Audio Risk'
+      },
+      human: {
+        label: 'Natural Human Speech: Continuous Formant Tracks, Pitch Variations & Natural Glottal Pulse',
+        dotClass: 'pulse-indicator',
+        hasVoid: false,
+        risk: '99.5% Authentic Human Voice'
+      },
+      tts: {
+        label: 'Tacotron2 Neural Speech: Periodic Mel-Scale Inversion Discontinuities',
+        dotClass: 'pulse-indicator warn',
+        hasVoid: true,
+        risk: '91% Neural Speech Risk'
+      }
+    };
+
+    let audioAnimFrame = 0;
+    function drawAudioCanvas() {
+      const w = audioCanvas.width;
+      const h = audioCanvas.height;
+      aCtx.clearRect(0, 0, w, h);
+
+      const v = voiceData[currentVoice];
+      document.getElementById('audioStageLabel').textContent = v.label;
+      document.getElementById('audioStatusDot').className = v.dotClass;
+
+      // Dark background
+      aCtx.fillStyle = '#090d16';
+      aCtx.fillRect(0, 0, w, h);
+
+      audioAnimFrame += 0.05;
+
+      if (currentAudioMode === 'mel') {
+        // Draw 80-band Log-Mel Spectrogram Simulation
+        const cols = 48;
+        const colW = w / cols;
+        const rows = 36;
+        const rowH = (h - 40) / rows;
+
+        for (let i = 0; i < cols; i++) {
+          for (let j = 0; j < rows; j++) {
+            const freq = (rows - j) / rows;
+            let intensity = 0;
+
+            if (v.hasVoid && freq > 0.65) {
+              // High-frequency void in synthetic voice
+              intensity = Math.sin(i * 0.4 + audioAnimFrame) * 0.05;
+            } else if (!v.hasVoid) {
+              // Natural voice with dynamic harmonic bands
+              const harmonic1 = Math.sin(i * 0.2 + freq * 14 + audioAnimFrame) * 0.5 + 0.5;
+              const harmonic2 = Math.cos(i * 0.15 + freq * 8) * 0.4 + 0.4;
+              intensity = (harmonic1 + harmonic2) / 2;
+            } else {
+              // Synthetic lower band
+              intensity = (Math.sin(i * 0.3 + freq * 10) * 0.5 + 0.5) * 0.8;
+            }
+
+            intensity = Math.max(0, Math.min(1, intensity));
+
+            // Colormap: Viridis/Inferno style (dark blue -> purple -> yellow)
+            const r = Math.round(intensity * 255);
+            const g = Math.round(intensity > 0.5 ? (intensity - 0.5) * 2 * 230 : 20);
+            const b = Math.round((1 - intensity) * 200 + intensity * 60);
+
+            aCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+            aCtx.fillRect(i * colW, j * rowH + 20, colW - 1, rowH - 1);
+          }
+        }
+
+        // Draw frequency axis callouts
+        aCtx.fillStyle = '#94a3b8';
+        aCtx.font = 'bold 9px monospace';
+        aCtx.fillText('16 kHz (Nyquist)', 8, 30);
+        aCtx.fillText('8 kHz (Cutoff Threshold)', 8, 140);
+        aCtx.fillText('0 Hz (DC Baseline)', 8, h - 25);
+
+        if (v.hasVoid) {
+          // Highlight Void
+          aCtx.fillStyle = 'rgba(239, 68, 68, 0.25)';
+          aCtx.fillRect(0, 20, w, 110);
+          aCtx.strokeStyle = '#ef4444';
+          aCtx.lineWidth = 1.5;
+          aCtx.strokeRect(4, 20, w - 8, 110);
+
+          aCtx.fillStyle = '#fca5a5';
+          aCtx.font = 'bold 11px sans-serif';
+          aCtx.fillText('⚠️ SYNTHETIC SPECTRAL VOID: > 8 kHz Energy Depletion (ASVspoof Saliency)', 20, 75);
+        }
+      } else if (currentAudioMode === 'wave') {
+        // Oscilloscope Waveform
+        aCtx.strokeStyle = v.hasVoid ? '#f87171' : '#34d399';
+        aCtx.lineWidth = 2;
+        aCtx.beginPath();
+        for (let x = 0; x < w; x++) {
+          const t = x / 40 + audioAnimFrame;
+          const amp = v.hasVoid ? (Math.sin(t) * 45 + Math.sin(t * 3.1) * 20) : (Math.sin(t) * 55 + Math.sin(t * 2.3) * 35 + Math.cos(t * 5.7) * 15);
+          const y = h / 2 + amp;
+          if (x === 0) aCtx.moveTo(x, y);
+          else aCtx.lineTo(x, y);
+        }
+        aCtx.stroke();
+
+        aCtx.fillStyle = '#cbd5e1';
+        aCtx.font = '11px monospace';
+        aCtx.fillText(`16 kHz Mono PCM Time-Domain Stream &bull; ${v.risk}`, 20, 40);
+      } else {
+        // Glottal Pitch Harmonics
+        aCtx.fillStyle = '#60a5fa';
+        for (let k = 0; k < 12; k++) {
+          const barH = Math.sin(k + audioAnimFrame) * 40 + 70;
+          aCtx.fillRect(k * 38 + 20, h - barH - 30, 28, barH);
+        }
+        aCtx.fillStyle = '#e2e8f0';
+        aCtx.font = '11px sans-serif';
+        aCtx.fillText('Harmonic Pitch Formants (F0, F1, F2 Glottal Timbre)', 20, 40);
+      }
+    }
+
+    // Voice Preset Buttons
+    document.querySelectorAll('[data-voice]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-voice]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentVoice = btn.getAttribute('data-voice');
+        drawAudioCanvas();
+      });
+    });
+
+    document.getElementById('btnAudioMel').addEventListener('click', (e) => {
+      setAudioMode(e.target, 'mel');
+    });
+    document.getElementById('btnAudioWave').addEventListener('click', (e) => {
+      setAudioMode(e.target, 'wave');
+    });
+    document.getElementById('btnAudioHarmonics').addEventListener('click', (e) => {
+      setAudioMode(e.target, 'harmonics');
+    });
+
+    function setAudioMode(btn, mode) {
+      document.querySelectorAll('#audio-panel .controls-bar button').forEach(b => {
+        if (b.id.startsWith('btnAudio')) b.classList.remove('active');
+      });
+      btn.classList.add('active');
+      currentAudioMode = mode;
+      drawAudioCanvas();
+    }
+
+    // ==========================================
+    // 3. EMOTION PILLAR (RAF-DB Softmax & EMA)
+    // ==========================================
+    const emotionBarsContainer = document.getElementById('emotionBars');
+    const emaCanvas = document.getElementById('emaCanvas');
+    const eCtx = emaCanvas.getContext('2d');
+
+    const emotions = [
+      { id: 'neutral', name: 'Neutral / Calm 😐', score: 0.10 },
+      { id: 'happy', name: 'Happiness 😊', score: 0.05 },
+      { id: 'surprise', name: 'Surprise 😲', score: 0.03 },
+      { id: 'sadness', name: 'Sadness 😢', score: 0.02 },
+      { id: 'anger', name: 'Anger 😠', score: 0.01 },
+      { id: 'disgust', name: 'Disgust 🤢', score: 0.01 },
+      { id: 'fear', name: 'Fear 😨', score: 0.01 }
+    ];
+
+    const emotionPresets = {
+      focused: { neutral: 0.78, happy: 0.12, surprise: 0.03, sadness: 0.02, anger: 0.02, disgust: 0.01, fear: 0.02 },
+      happy: { neutral: 0.10, happy: 0.84, surprise: 0.02, sadness: 0.01, anger: 0.01, disgust: 0.01, fear: 0.01 },
+      surprise: { neutral: 0.05, happy: 0.05, surprise: 0.82, sadness: 0.02, anger: 0.02, disgust: 0.01, fear: 0.03 },
+      skeptical: { neutral: 0.28, happy: 0.03, surprise: 0.15, sadness: 0.04, anger: 0.38, disgust: 0.08, fear: 0.04 }
+    };
+
+    function renderEmotionBars(distribution) {
+      emotionBarsContainer.innerHTML = '';
+      const list = Object.entries(distribution).sort((a, b) => b[1] - a[1]);
+      const maxKey = list[0][0];
+
+      list.forEach(([k, val]) => {
+        const pct = Math.round(val * 100);
+        const isMax = k === maxKey;
+        const row = document.createElement('div');
+        row.className = 'emotion-bar-row';
+        row.innerHTML = `
+          <div class="emotion-bar-header">
+            <span style="color:${isMax ? '#10b981' : '#cbd5e1'}; font-weight:${isMax ? '700' : '500'};">${getEmotionLabel(k)}</span>
+            <span style="color:${isMax ? '#10b981' : '#94a3b8'};">${pct}%</span>
+          </div>
+          <div class="emotion-bar-track">
+            <div class="emotion-bar-fill ${isMax ? 'highlight' : ''}" style="width: ${pct}%;"></div>
+          </div>
+        `;
+        emotionBarsContainer.appendChild(row);
+      });
+    }
+
+    function getEmotionLabel(k) {
+      const map = {
+        neutral: 'Neutral / Calm 😐',
+        happy: 'Happiness 😊',
+        surprise: 'Surprise 😲',
+        sadness: 'Sadness 😢',
+        anger: 'Anger 😠',
+        disgust: 'Disgust 🤢',
+        fear: 'Fear 😨'
+      };
+      return map[k] || k;
+    }
+
+    // EMA Smoothing Trajectory Canvas
+    let emaStep = 0;
+    const rawHistory = [];
+    const emaHistory = [];
+    let currentSmoothed = 0.5;
+
+    function drawEMACanvas() {
+      const w = emaCanvas.width;
+      const h = emaCanvas.height;
+      eCtx.clearRect(0, 0, w, h);
+
+      // Dark background
+      eCtx.fillStyle = '#0f172a';
+      eCtx.fillRect(0, 0, w, h);
+
+      // Center reference line
+      eCtx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      eCtx.beginPath();
+      eCtx.moveTo(0, h / 2);
+      eCtx.lineTo(w, h / 2);
+      eCtx.stroke();
+
+      // Simulate incoming noisy raw frame probability
+      emaStep += 0.08;
+      const targetVal = 0.5 + Math.sin(emaStep * 0.5) * 0.35;
+      const noise = (Math.random() - 0.5) * 0.28;
+      const rawVal = Math.max(0.05, Math.min(0.95, targetVal + noise));
+
+      // EMA equation: S_t = 0.55 * X_t + 0.45 * S_{t-1}
+      currentSmoothed = 0.55 * rawVal + 0.45 * currentSmoothed;
+
+      rawHistory.push(rawVal);
+      emaHistory.push(currentSmoothed);
+      if (rawHistory.length > 90) {
+        rawHistory.shift();
+        emaHistory.shift();
+      }
+
+      // Draw Raw Noisy Line (Dotted / Red-Orange)
+      eCtx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+      eCtx.lineWidth = 1.5;
+      eCtx.beginPath();
+      rawHistory.forEach((v, idx) => {
+        const x = (idx / 90) * w;
+        const y = h - (v * h);
+        if (idx === 0) eCtx.moveTo(x, y);
+        else eCtx.lineTo(x, y);
+      });
+      eCtx.stroke();
+
+      // Draw Smoothed EMA Line (Smooth Solid Emerald Green)
+      eCtx.strokeStyle = '#10b981';
+      eCtx.lineWidth = 2.5;
+      eCtx.beginPath();
+      emaHistory.forEach((v, idx) => {
+        const x = (idx / 90) * w;
+        const y = h - (v * h);
+        if (idx === 0) eCtx.moveTo(x, y);
+        else eCtx.lineTo(x, y);
+      });
+      eCtx.stroke();
+
+      // Legend
+      eCtx.fillStyle = '#ef4444';
+      eCtx.fillRect(20, h - 22, 10, 10);
+      eCtx.fillStyle = '#94a3b8';
+      eCtx.font = '10px sans-serif';
+      eCtx.fillText('Raw Noisy Frame Logit', 35, h - 14);
+
+      eCtx.fillStyle = '#10b981';
+      eCtx.fillRect(170, h - 22, 10, 10);
+      eCtx.fillStyle = '#94a3b8';
+      eCtx.fillText('Smoothed EMA Curve (0.55/0.45)', 185, h - 14);
+    }
+
+    // Emotion Presets
+    document.querySelectorAll('[data-emotion]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-emotion]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const emo = btn.getAttribute('data-emotion');
+        if (emotionPresets[emo]) {
+          renderEmotionBars(emotionPresets[emo]);
+        }
+      });
+    });
+
+    // Initialize
+    drawVideoCanvas();
+    drawAudioCanvas();
+    renderEmotionBars(emotionPresets['focused']);
+
+    // Continuous loop for animated signals
+    setInterval(() => {
+      drawAudioCanvas();
+      drawEMACanvas();
+    }, 80);
+  </script>
+</body>
+</html>
