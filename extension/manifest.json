@@ -34,8 +34,18 @@
   "content_scripts": [
     {
       "matches": [
-        "<all_urls>"
+        "https://meet.google.com/*",
+        "https://*.zoom.us/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.webex.com/*",
+        "https://discord.com/*",
+        "https://deepfake-shield.pages.dev/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://www.youtube.com/*"
       ],
+      "all_frames": false,
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"

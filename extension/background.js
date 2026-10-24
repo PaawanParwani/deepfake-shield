@@ -7,6 +7,8 @@ function sanitizeBackendUrl(url) {
   return url.replace(/\/+$/, "");
 }
 
+let backendDownUntil = 0;
+
 // Ensure local PC backend is configured on install and startup
 function ensureConfig() {
   chrome.storage.local.get(["backendUrl", "enabled", "scanIntervalMs", "sensitivityThreshold"], (data) => {
@@ -15,8 +17,8 @@ function ensureConfig() {
     chrome.storage.local.set({
       enabled: data && data.enabled !== undefined ? data.enabled : true,
       backendUrl: cleanUrl,
-      scanIntervalMs: data && data.scanIntervalMs ? data.scanIntervalMs : 1500,
-      sensitivityThreshold: data && data.sensitivityThreshold ? data.sensitivityThreshold : 0.55,
+      scanIntervalMs: data && data.scanIntervalMs ? data.scanIntervalMs : 1000,
+      sensitivityThreshold: data && data.sensitivityThreshold ? data.sensitivityThreshold : 0.88,
       alertNotifications: true,
       lastDetections: []
     });
@@ -24,7 +26,6 @@ function ensureConfig() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("[Human Verification] Extension installed and active.");
   ensureConfig();
 });
 
@@ -61,12 +62,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Native background fetch proxy: Bypasses Google Meet meetsw.js service worker and CSP
+  // Native background fetch proxy with circuit breaker: prevents service worker locking
   if (message.type === "PREDICT_FRAME") {
+    if (Date.now() < backendDownUntil) {
+      sendResponse({ success: false, error: "Backend offline (throttled)" });
+      return true;
+    }
+
     const { backendUrl, image_base64 } = message.payload || {};
     const targetUrl = sanitizeBackendUrl(backendUrl);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6500);
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
 
     fetch(`${targetUrl}/predict/frame`, {
       method: "POST",
@@ -80,26 +86,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           throw new Error(`HTTP ${resp.status}`);
         }
         const data = await resp.json();
+        backendDownUntil = 0; // Backend is healthy
         sendResponse({ success: true, data });
       })
       .catch((err) => {
         clearTimeout(timeoutId);
+        backendDownUntil = Date.now() + 3000; // Pause attempts for 3s to prevent spamming
         sendResponse({ success: false, error: err.message });
       });
 
-    return true; // Keep message channel open for async response
+    return true;
   }
 
   // Backend Health check proxy
   if (message.type === "CHECK_HEALTH") {
     const targetUrl = sanitizeBackendUrl(message.payload ? message.payload.backendUrl : null);
-    fetch(`${targetUrl}/health`, { method: "GET" })
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1800);
+
+    fetch(`${targetUrl}/health`, { method: "GET", signal: controller.signal })
       .then(async (resp) => {
+        clearTimeout(timeoutId);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
+        backendDownUntil = 0;
         sendResponse({ success: true, data });
       })
       .catch((err) => {
+        clearTimeout(timeoutId);
         sendResponse({ success: false, error: err.message });
       });
     return true;
