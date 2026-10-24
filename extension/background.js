@@ -62,7 +62,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Native background fetch proxy: routes frames cleanly to local backend
   if (message.type === "PREDICT_FRAME") {
-    const { backendUrl, image_base64 } = message.payload || {};
+    const { backendUrl, image_base64, mirrored } = message.payload || {};
     const targetUrl = sanitizeBackendUrl(backendUrl);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
@@ -70,7 +70,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     fetch(`${targetUrl}/predict/frame`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_base64 }),
+      body: JSON.stringify({ image_base64, mirrored: Boolean(mirrored) }),
       signal: controller.signal
     })
       .then(async (resp) => {

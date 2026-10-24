@@ -1291,6 +1291,9 @@ async def predict_frame(
         )
 
     img_bytes: Optional[bytes] = None
+    client_mirrored = False
+    if "mirrored" in request.query_params:
+        client_mirrored = request.query_params.get("mirrored", "").lower() in ("true", "1")
 
     if file is not None and isinstance(file, UploadFile):
         validate_file_size(file)
@@ -1303,6 +1306,8 @@ async def predict_frame(
                 if "," in raw_b64:
                     raw_b64 = raw_b64.split(",", 1)[1]
                 img_bytes = base64.b64decode(raw_b64)
+            if "mirrored" in body:
+                client_mirrored = bool(body.get("mirrored"))
         except Exception:
             pass
 
@@ -1765,6 +1770,7 @@ async def predict_frame(
             },
             "frame_width": w,
             "frame_height": h,
+            "mirrored": client_mirrored,
             "latency_ms": latency_ms,
             "message": "No human face detected in video frame.",
         }
@@ -1851,7 +1857,7 @@ async def predict_frame(
             "bounding_box": [int(v) for v in c_info["ui_box"]],
             "norm_bbox": nb,
             "norm_xywh": norm_xywh,
-            "mirrored": False,
+            "mirrored": client_mirrored,
             "raw_box": [int(v) for v in c_info["raw_box"]],
             "p_fake": round(float(p_f), 4),
             "raw_p_fake": round(float(raw_p_f), 4),
@@ -1900,7 +1906,7 @@ async def predict_frame(
         "bounding_box": bounding_box,
         "norm_bbox": norm_bbox,
         "norm_xywh": norm_xywh,
-        "mirrored": False,
+        "mirrored": client_mirrored,
         "emotion": primary_emotion,
         "faces": faces_list,
         "auto_focus": {

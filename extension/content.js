@@ -10,10 +10,10 @@
   let config = {
     enabled: true,
     backendUrl: "http://127.0.0.1:8000",
-    scanIntervalMs: 1000,
-    scanIntervalLockedMs: 800,
+    scanIntervalMs: 500,
+    scanIntervalLockedMs: 300,
     sensitivityThreshold: 0.88,
-    mirrorMode: "normal", // "normal" (direct 1:1 camera mapping), "flipped" (mirror inverted), "auto"
+    mirrorMode: "auto", // "auto" (default: CSS matrix detection), "flipped" (manual override), "normal" (manual override)
     debug: true
   };
 
@@ -35,8 +35,26 @@
   const trackedFaces = new Map();
   let faceIdCounter = 0;
 
+  function isDebugEnabled() {
+    return (typeof window !== "undefined" && window.__HV_DEBUG__ !== undefined)
+      ? Boolean(window.__HV_DEBUG__)
+      : Boolean(config.debug);
+  }
+
+  // Developer console convenience: window.setDeepfakeShieldDebug(true/false)
+  if (typeof window !== "undefined") {
+    window.setDeepfakeShieldDebug = function (enabled) {
+      config.debug = Boolean(enabled);
+      window.__HV_DEBUG__ = config.debug;
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ debug: config.debug });
+      }
+      console.log(`[Deepfake Shield] Debug logging set to: ${config.debug}`);
+    };
+  }
+
   function debugLog(...args) {
-    if (config.debug) {
+    if (isDebugEnabled()) {
       console.log("%c[Deepfake Shield]", "color: #0ea5e9; font-weight: bold;", ...args);
     }
   }
@@ -58,7 +76,7 @@
   // Sync extension storage config (persists user preferences across reconnects)
   if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(
-      ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold", "mirrorMode"],
+      ["enabled", "backendUrl", "scanIntervalMs", "scanIntervalLockedMs", "sensitivityThreshold", "mirrorMode", "debug"],
       (stored) => {
         if (stored) {
           if (!stored.backendUrl || stored.backendUrl.includes("localhost") || stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend")) {
@@ -66,12 +84,13 @@
             chrome.storage.local.set({ backendUrl: "http://127.0.0.1:8000" });
           }
           if (stored.mirrorMode === undefined || stored.mirrorMode === null) {
-            stored.mirrorMode = "normal";
+            stored.mirrorMode = "auto";
           }
           config = { ...config, ...stored };
         }
         updateDockPill();
         updateFlipButtonLabel();
+        repositionTrackedFaces();
       }
     );
 
@@ -87,6 +106,7 @@
         }
         updateDockPill();
         updateFlipButtonLabel();
+        repositionTrackedFaces();
       }
     });
   }
@@ -142,34 +162,110 @@
     }
   }
 
-  // Comprehensive transform detection across video and all DOM ancestors
-  function getElementTransformInfo(video) {
-    if (!video) return { hasMirror: false, transforms: [] };
+  // Parse CSS transform string into 2x2 affine matrix [a, b, c, d]
+  // In CSS matrix(a, b, c, d, tx, ty):
+  //   [ a  c  tx ]
+  //   [ b  d  ty ]
+  // In CSS matrix3d(m11, m12, ... m44):
+  //   [ m11  m21  ... ]
+  //   [ m12  m22  ... ]
+  function parseTransform2D(transformStr) {
+    if (!transformStr || transformStr === "none") {
+      return [1, 0, 0, 1]; // Identity [a, b, c, d]
+    }
+    const t = transformStr.trim().toLowerCase();
+    if (t.startsWith("matrix(")) {
+      const parts = t.slice(7, -1).split(",").map((s) => parseFloat(s.trim()));
+      if (parts.length >= 4 && !parts.slice(0, 4).some(isNaN)) {
+        return [parts[0], parts[1], parts[2], parts[3]];
+      }
+    } else if (t.startsWith("matrix3d(")) {
+      const parts = t.slice(9, -1).split(",").map((s) => parseFloat(s.trim()));
+      // Column-major order:
+      // a = a1 (parts[0]), b = b1 (parts[1]), c = a2 (parts[4]), d = b2 (parts[5])
+      if (parts.length >= 16 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[4]) && !isNaN(parts[5])) {
+        return [parts[0], parts[1], parts[4], parts[5]];
+      }
+    }
+    return [1, 0, 0, 1];
+  }
+
+  // Multiply two 2x2 matrices: M1 x M2
+  // [a1, c1] x [a2, c2] = [a1*a2 + c1*b2, a1*c2 + c1*d2]
+  // [b1, d1]   [b2, d2]   [b1*a2 + d1*b2, b1*c2 + d1*d2]
+  function multiply2x2(m1, m2) {
+    const [a1, b1, c1, d1] = m1;
+    const [a2, b2, c2, d2] = m2;
+    return [
+      a1 * a2 + c1 * b2,
+      b1 * a2 + d1 * b2,
+      a1 * c2 + c1 * d2,
+      b1 * c2 + d1 * d2
+    ];
+  }
+
+  // Walk from target <video> up through ancestors, reading computed transforms,
+  // multiplying matrices from video to root, and detecting negative x-scale (a < 0).
+  function detectVideoMirroring(video) {
+    if (!video) return { isMirrored: false, scaleX: 1, transforms: [] };
+
     let el = video;
-    let hasMirror = false;
     const transforms = [];
+    const chain = [];
 
     while (el && el !== document.documentElement) {
       try {
         const compStyle = window.getComputedStyle(el);
-        const t = (compStyle.transform || compStyle.webkitTransform || "").toLowerCase();
+        const t = (compStyle.transform || compStyle.webkitTransform || "").trim();
         if (t && t !== "none") {
           const identifier = `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''}`;
           transforms.push(`${identifier}: ${t}`);
-          if (
-            t.includes("matrix(-1") ||
-            t.includes("scalex(-1)") ||
-            t.includes("scale(-1") ||
-            t.includes("rotatey(180deg)")
-          ) {
-            hasMirror = true;
-          }
+          chain.push(parseTransform2D(t));
         }
       } catch {}
       el = el.parentElement;
     }
 
-    return { hasMirror, transforms };
+    // Cumulative transform: M_total = T_root x ... x T_parent x T_video
+    // chain is [T_video, T_parent, T_grandparent, ...]
+    let cumulative = [1, 0, 0, 1];
+    for (let i = chain.length - 1; i >= 0; i--) {
+      cumulative = multiply2x2(cumulative, chain[i]);
+    }
+
+    const scaleX = cumulative[0];
+    const isMirrored = scaleX < -0.001;
+
+    return {
+      isMirrored,
+      scaleX,
+      cumulative,
+      transforms
+    };
+  }
+
+  function resolveMirrorState(video) {
+    const mirrorInfo = detectVideoMirroring(video);
+    let shouldFlip = false;
+    let modeLabel = config.mirrorMode || "auto";
+
+    if (config.mirrorMode === "flipped") {
+      shouldFlip = true;
+      modeLabel = "forced flipped";
+    } else if (config.mirrorMode === "normal") {
+      shouldFlip = false;
+      modeLabel = "forced normal";
+    } else {
+      // "auto" (default): Follow computed CSS matrix transform
+      shouldFlip = mirrorInfo.isMirrored;
+      modeLabel = "auto";
+    }
+
+    return {
+      shouldFlip,
+      modeLabel,
+      mirrorInfo
+    };
   }
 
   // Mathematical CSS object-fit Geometry (Letterbox / Pillarbox / Crop Compensated)
@@ -321,31 +417,26 @@
     }
   }
 
-  // Repositions currently tracked faces immediately using latest geometry
+  // Repositions currently tracked faces immediately using latest geometry & transform
   function repositionTrackedFaces() {
     if (!activeVideo || trackedFaces.size === 0) return;
     const geom = getRenderedVideoGeometry(activeVideo);
     if (!geom) return;
 
-    const transformInfo = getElementTransformInfo(activeVideo);
-    const shouldFlip = config.mirrorMode === "flipped" ? true :
-                       config.mirrorMode === "auto" ? transformInfo.hasMirror :
-                       false;
+    const { shouldFlip } = resolveMirrorState(activeVideo);
+    updateFlipButtonLabel();
 
     for (const [id, face] of trackedFaces.entries()) {
       if (!face.lastNormBox || !face.overlayElement) continue;
 
-      let [nx1, ny1, nx2, ny2] = face.lastNormBox;
-      if (shouldFlip) {
-        const origNx1 = nx1;
-        nx1 = 1.0 - nx2;
-        nx2 = 1.0 - origNx1;
-      }
+      let [x_norm, y_norm, w_norm, h_norm] = face.lastNormBox;
+      // If mirrored, flip the whole box: x_screen = 1 - (x_norm + w_norm)
+      const screen_x_norm = shouldFlip ? (1.0 - (x_norm + w_norm)) : x_norm;
 
-      const targetX = geom.left + geom.offsetX + (nx1 * geom.renderW);
-      const targetY = geom.top + geom.offsetY + (ny1 * geom.renderH);
-      const targetW = (nx2 - nx1) * geom.renderW;
-      const targetH = (ny2 - ny1) * geom.renderH;
+      const targetX = geom.left + geom.offsetX + (screen_x_norm * geom.renderW);
+      const targetY = geom.top + geom.offsetY + (y_norm * geom.renderH);
+      const targetW = w_norm * geom.renderW;
+      const targetH = h_norm * geom.renderH;
 
       face.smoothed = { x: targetX, y: targetY, w: targetW, h: targetH };
 
@@ -399,12 +490,18 @@
         }
       }, 7500);
 
+      const resolved = resolveMirrorState(video);
+
       if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
         try {
           chrome.runtime.sendMessage(
             {
               type: "PREDICT_FRAME",
-              payload: { backendUrl: config.backendUrl, image_base64: capture.dataUrl }
+              payload: {
+                backendUrl: config.backendUrl,
+                image_base64: capture.dataUrl,
+                mirrored: resolved.shouldFlip
+              }
             },
             (response) => {
               clearTimeout(watchdogId);
@@ -475,8 +572,21 @@
   function updateFlipButtonLabel() {
     if (!hudBadge) return;
     const flipBtn = hudBadge.querySelector("#hv-btn-flip");
-    if (flipBtn) {
-      flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Normal";
+    if (!flipBtn) return;
+
+    if (config.mirrorMode === "auto") {
+      const mirrorInfo = detectVideoMirroring(activeVideo);
+      flipBtn.textContent = mirrorInfo.isMirrored ? "⇄ Auto (Mirrored)" : "⇄ Auto (Normal)";
+      flipBtn.title = "Mirror Mode: Auto (detecting CSS transforms). Click to cycle: Auto -> Force Flipped -> Force Normal.";
+      flipBtn.style.borderColor = "rgba(255, 255, 255, 0.35)";
+    } else if (config.mirrorMode === "flipped") {
+      flipBtn.textContent = "⇄ Force Flipped";
+      flipBtn.title = "Mirror Mode: Forced Flipped (Manual Override). Click to cycle: Auto -> Force Flipped -> Force Normal.";
+      flipBtn.style.borderColor = "rgba(245, 158, 11, 0.85)";
+    } else {
+      flipBtn.textContent = "⇄ Force Normal";
+      flipBtn.title = "Mirror Mode: Forced Normal (Manual Override). Click to cycle: Auto -> Force Flipped -> Force Normal.";
+      flipBtn.style.borderColor = "rgba(59, 130, 246, 0.85)";
     }
   }
 
@@ -492,7 +602,7 @@
           <span id="hv-badge-title">PROTECTED</span>
           <span class="hv-hud-score" id="hv-badge-score">Scanning face...</span>
         </div>
-        <button id="hv-btn-flip" title="Toggle Mirror / Flip (⇄)" class="hv-badge-flip-btn">⇄ Normal</button>
+        <button id="hv-btn-flip" title="Toggle Mirror / Flip (⇄)" class="hv-badge-flip-btn">⇄ Auto</button>
       `;
       document.body.appendChild(hudBadge);
 
@@ -501,8 +611,14 @@
         updateFlipButtonLabel();
         flipBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          // Toggle between direct 1:1 ("normal") and horizontal mirror ("flipped")
-          config.mirrorMode = config.mirrorMode === "flipped" ? "normal" : "flipped";
+          // Cycle: auto -> flipped -> normal -> auto
+          if (config.mirrorMode === "auto") {
+            config.mirrorMode = "flipped";
+          } else if (config.mirrorMode === "flipped") {
+            config.mirrorMode = "normal";
+          } else {
+            config.mirrorMode = "auto";
+          }
           if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
             chrome.storage.local.set({ mirrorMode: config.mirrorMode });
           }
@@ -552,16 +668,12 @@
     const fw = data.frame_width || capture.capturedW || 320;
     const fh = data.frame_height || capture.capturedH || 180;
 
-    // Computed transform analysis on video and all DOM ancestors
-    const transformInfo = getElementTransformInfo(video);
-
-    // Mirror logic:
-    // "normal" (default): Direct 1:1 camera mapping.
-    // "flipped": Invert horizontal axis.
-    // "auto": Follow CSS transform if present.
-    const shouldFlip = config.mirrorMode === "flipped" ? true :
-                       config.mirrorMode === "auto" ? transformInfo.hasMirror :
-                       false;
+    // Automatic CSS matrix mirroring resolution & manual override
+    const resolved = resolveMirrorState(video);
+    const shouldFlip = resolved.shouldFlip;
+    const modeLabel = resolved.modeLabel;
+    const transformInfo = resolved.mirrorInfo;
+    updateFlipButtonLabel();
 
     // ZERO FACES DETECTED: Instant Ghost Box Purge
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
@@ -590,59 +702,55 @@
     const mappedDetections = detections.map((det, idx) => {
       const box = det.bounding_box || [0, 0, 0, 0];
 
-      // Extract normalized bounding box from backend [x1, y1, x2, y2]
-      let nx1, ny1, nx2, ny2;
+      // Extract normalized bounding box from backend [x_norm, y_norm, w_norm, h_norm]
+      let x_norm, y_norm, w_norm, h_norm;
       if (det.norm_xywh && det.norm_xywh.length >= 4) {
-        nx1 = det.norm_xywh[0];
-        ny1 = det.norm_xywh[1];
-        nx2 = nx1 + det.norm_xywh[2];
-        ny2 = ny1 + det.norm_xywh[3];
+        x_norm = det.norm_xywh[0];
+        y_norm = det.norm_xywh[1];
+        w_norm = det.norm_xywh[2];
+        h_norm = det.norm_xywh[3];
       } else if (det.norm_bbox && det.norm_bbox.length >= 4) {
-        nx1 = det.norm_bbox[0];
-        ny1 = det.norm_bbox[1];
-        nx2 = det.norm_bbox[2];
-        ny2 = det.norm_bbox[3];
+        x_norm = det.norm_bbox[0];
+        y_norm = det.norm_bbox[1];
+        w_norm = det.norm_bbox[2] - det.norm_bbox[0];
+        h_norm = det.norm_bbox[3] - det.norm_bbox[1];
       } else {
-        nx1 = (box[0] || 0) / fw;
-        ny1 = (box[1] || 0) / fh;
-        nx2 = (box[2] || 0) / fw;
-        ny2 = (box[3] || 0) / fh;
+        x_norm = (box[0] || 0) / fw;
+        y_norm = (box[1] || 0) / fh;
+        w_norm = ((box[2] || 0) - (box[0] || 0)) / fw;
+        h_norm = ((box[3] || 0) - (box[1] || 0)) / fh;
       }
 
-      nx1 = Math.max(0.0, Math.min(1.0, nx1));
-      ny1 = Math.max(0.0, Math.min(1.0, ny1));
-      nx2 = Math.max(0.0, Math.min(1.0, nx2));
-      ny2 = Math.max(0.0, Math.min(1.0, ny2));
+      x_norm = Math.max(0.0, Math.min(1.0, x_norm));
+      y_norm = Math.max(0.0, Math.min(1.0, y_norm));
+      w_norm = Math.max(0.0, Math.min(1.0 - x_norm, w_norm));
+      h_norm = Math.max(0.0, Math.min(1.0 - y_norm, h_norm));
 
-      const rawNormBox = [nx1, ny1, nx2, ny2];
+      const rawNormBox = [x_norm, y_norm, w_norm, h_norm];
 
-      // Horizontal flip mapping if mirroring is active
-      if (shouldFlip) {
-        const origNx1 = nx1;
-        nx1 = 1.0 - nx2;
-        nx2 = 1.0 - origNx1;
-      }
+      // Exact horizontal mirror mapping: x_screen = 1 - (x_norm + w_norm)
+      const screen_x_norm = shouldFlip ? (1.0 - (x_norm + w_norm)) : x_norm;
 
-      const targetX = geom.left + geom.offsetX + (nx1 * geom.renderW);
-      const targetY = geom.top + geom.offsetY + (ny1 * geom.renderH);
-      const targetW = (nx2 - nx1) * geom.renderW;
-      const targetH = (ny2 - ny1) * geom.renderH;
+      const targetX = geom.left + geom.offsetX + (screen_x_norm * geom.renderW);
+      const targetY = geom.top + geom.offsetY + (y_norm * geom.renderH);
+      const targetW = w_norm * geom.renderW;
+      const targetH = h_norm * geom.renderH;
       const centerX = targetX + targetW / 2;
       const centerY = targetY + targetH / 2;
 
-      // Real-Time Engineering Diagnostic Log (as requested)
-      if (idx === 0) {
+      // Real-Time Engineering Diagnostic Log (gated behind debug flag)
+      if (isDebugEnabled() && idx === 0) {
         console.log(
           `%c[Deepfake Shield Per-Frame Debug]%c\n` +
           `• backend bbox: [${box.join(', ')}]\n` +
-          `• norm_xywh: [${nx1.toFixed(3)}, ${ny1.toFixed(3)}, ${(nx2 - nx1).toFixed(3)}, ${(ny2 - ny1).toFixed(3)}]\n` +
+          `• norm_xywh: [${x_norm.toFixed(3)}, ${y_norm.toFixed(3)}, ${w_norm.toFixed(3)}, ${h_norm.toFixed(3)}]\n` +
           `• frame sent: ${capture.capturedW}x${capture.capturedH}\n` +
           `• video: ${video.videoWidth}x${video.videoHeight} (ratio: ${(video.videoWidth / video.videoHeight).toFixed(3)})\n` +
           `• elem: ${Math.round(geom.width)}x${Math.round(geom.height)} (client: ${video.clientWidth}x${video.clientHeight})\n` +
           `• getBoundingClientRect: left=${Math.round(geom.left)}, top=${Math.round(geom.top)}, w=${Math.round(geom.width)}, h=${Math.round(geom.height)}\n` +
           `• object-fit: ${geom.objectFit}, renderW: ${Math.round(geom.renderW)}, renderH: ${Math.round(geom.renderH)}, offset: (${Math.round(geom.offsetX)}, ${Math.round(geom.offsetY)})\n` +
           `• transforms: [${transformInfo.transforms.join(' | ') || 'none'}]\n` +
-          `• mirror applied: ${shouldFlip} (mode: ${config.mirrorMode})\n` +
+          `• mirror applied: ${shouldFlip} (${modeLabel})\n` +
           `• screen target: left=${Math.round(targetX)}px, top=${Math.round(targetY)}px, w=${Math.round(targetW)}px, h=${Math.round(targetH)}px\n` +
           `• devicePixelRatio: ${window.devicePixelRatio}`,
           "color: #0ea5e9; font-weight: bold;",
@@ -705,8 +813,17 @@
       bestMatch.verdict = mDet.det.verdict || "authentic";
       bestMatch.confidence = mDet.det.confidence || 100.0;
 
-      // Exponential Moving Average (EMA) smoothing (alpha = 0.75): smooths webcam noise without lag
-      const alpha = 0.75;
+      // Measure displacement of the face center relative to rendered video dimensions
+      const prevCenterX = bestMatch.smoothed.x + bestMatch.smoothed.w / 2;
+      const prevCenterY = bestMatch.smoothed.y + bestMatch.smoothed.h / 2;
+      const relDx = Math.abs(mDet.centerX - prevCenterX) / Math.max(1, geom.renderW);
+      const relDy = Math.abs(mDet.centerY - prevCenterY) / Math.max(1, geom.renderH);
+      const relDist = Math.sqrt(relDx * relDx + relDy * relDy);
+
+      // Dynamic EMA smoothing: snap immediately when moving >10% of frame, smooth jitter during subtle motion
+      const isFastMovement = relDist > 0.10;
+      const alpha = isFastMovement ? 1.0 : 0.70;
+
       bestMatch.smoothed.x = alpha * mDet.targetX + (1 - alpha) * bestMatch.smoothed.x;
       bestMatch.smoothed.y = alpha * mDet.targetY + (1 - alpha) * bestMatch.smoothed.y;
       bestMatch.smoothed.w = alpha * mDet.targetW + (1 - alpha) * bestMatch.smoothed.w;
@@ -714,6 +831,10 @@
 
       const el = bestMatch.overlayElement;
       if (el) {
+        // Disable CSS transition during fast head movements to eliminate visual lag/trailing
+        el.style.transition = isFastMovement
+          ? "none"
+          : "left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out, border-color 0.25s, box-shadow 0.25s, opacity 0.25s";
         el.style.display = "block";
         el.style.left = `${Math.round(bestMatch.smoothed.x)}px`;
         el.style.top = `${Math.round(bestMatch.smoothed.y)}px`;
@@ -976,7 +1097,7 @@
     updateHUDBadgePosition();
   });
 
-  // Global MutationObserver: Detects video element creation/swaps in Google Meet
+  // Global MutationObserver: Detects video element creation/swaps & style/transform changes in Google Meet
   activeVideoMutationObserver = new MutationObserver(() => {
     if (document.hidden || !config.enabled) return;
     if (!activeVideo || !document.body.contains(activeVideo) || activeVideo.videoWidth < 40) {
@@ -987,9 +1108,12 @@
         attachVideoObservers(v);
         executeLiveScan();
       }
+    } else {
+      repositionTrackedFaces();
+      updateHUDBadgePosition();
     }
   });
-  activeVideoMutationObserver.observe(document.body, { childList: true, subtree: true });
+  activeVideoMutationObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class"] });
 
   // Start the continuous scanning loop
   startDetectionLoop();
