@@ -117,8 +117,8 @@
             if (thresholdVal) thresholdVal.textContent = `${res.precisionMode}% Precision`;
           }
           if (res.mirrorMode !== undefined && mirrorModeSelect) {
-            mirrorModeSelect.value = res.mirrorMode;
-            if (mirrorVal) mirrorVal.textContent = res.mirrorMode === "auto" ? "Auto" : (res.mirrorMode === "mirrored" ? "Mirrored" : "Normal");
+            mirrorModeSelect.value = res.mirrorMode === "flipped" ? "flipped" : "normal";
+            if (mirrorVal) mirrorVal.textContent = res.mirrorMode === "flipped" ? "Inverted" : "Direct 1:1";
           }
 
           checkBackendHealth();
@@ -192,7 +192,7 @@
     if (mirrorModeSelect) {
       mirrorModeSelect.addEventListener("change", () => {
         const mode = mirrorModeSelect.value;
-        if (mirrorVal) mirrorVal.textContent = mode === "auto" ? "Auto" : (mode === "mirrored" ? "Mirrored" : "Normal");
+        if (mirrorVal) mirrorVal.textContent = mode === "flipped" ? "Inverted" : "Direct 1:1";
         if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
           chrome.storage.local.set({ mirrorMode: mode });
         }

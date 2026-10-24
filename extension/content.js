@@ -13,7 +13,7 @@
     scanIntervalMs: 1000,       // 1.0s search interval
     scanIntervalLockedMs: 750,  // 0.75s verification interval when locked
     sensitivityThreshold: 0.88,
-    mirrorMode: "auto",         // "auto", "mirrored", "unmirrored"
+    mirrorMode: "normal",       // "normal" (direct 1:1 face alignment), "flipped"
     debug: false
   };
 
@@ -57,6 +57,11 @@
           if (stored.backendUrl && (stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend"))) {
             stored.backendUrl = "http://localhost:8000";
             chrome.storage.local.set({ backendUrl: "http://localhost:8000" });
+          }
+          // Reset any old inverted mirrorMode
+          if (!stored.mirrorMode || stored.mirrorMode === "auto" || stored.mirrorMode === "mirrored") {
+            stored.mirrorMode = "normal";
+            chrome.storage.local.set({ mirrorMode: "normal" });
           }
           config = { ...config, ...stored };
         }
@@ -380,11 +385,11 @@
       if (flipBtn) {
         flipBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          const current = isVideoMirrored(activeVideo);
-          config.mirrorMode = current ? "unmirrored" : "mirrored";
+          config.mirrorMode = config.mirrorMode === "flipped" ? "normal" : "flipped";
           if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
             chrome.storage.local.set({ mirrorMode: config.mirrorMode });
           }
+          flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Flip";
           analyzeLiveFrame();
         });
       }
@@ -453,6 +458,7 @@
     const now = performance.now();
     const matchedTrackIds = new Set();
 
+    const shouldFlip = config.mirrorMode === "flipped";
     const mappedDetections = detections.map((det, idx) => {
       const box = det.bounding_box || [0, 0, 0, 0];
       const bx1 = box[0];
@@ -460,8 +466,8 @@
       const bx2 = box[2];
       const by2 = box[3];
 
-      const effX1 = mirrored ? (fw - bx2) : bx1;
-      const effX2 = mirrored ? (fw - bx1) : bx2;
+      const effX1 = shouldFlip ? (fw - bx2) : bx1;
+      const effX2 = shouldFlip ? (fw - bx1) : bx2;
 
       const screenX = geom.left + geom.offsetX + (effX1 / fw) * geom.renderW;
       const screenY = geom.top + geom.offsetY + (by1 / fh) * geom.renderH;
