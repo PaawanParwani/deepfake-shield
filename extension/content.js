@@ -13,6 +13,7 @@
     scanIntervalMs: 1000,       // 1.0s search interval
     scanIntervalLockedMs: 750,  // 0.75s verification interval when locked
     sensitivityThreshold: 0.88,
+    mirrorMode: "auto",         // "auto", "mirrored", "unmirrored"
     debug: false
   };
 
@@ -49,7 +50,7 @@
   // Sync extension storage config
   if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(
-      ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold"],
+      ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold", "mirrorMode"],
       (stored) => {
         if (stored) {
           if (stored.backendUrl && (stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend"))) {
@@ -124,22 +125,74 @@
     }
   }
 
-  // Mirroring Detection
+  // High-Precision Mirroring Detection for Google Meet, Zoom, Teams, Webex
   function isVideoMirrored(video) {
+    if (!video) return false;
+
+    // Explicit user override if configured
+    if (config.mirrorMode === "mirrored") return true;
+    if (config.mirrorMode === "unmirrored") return false;
+
     let el = video;
     let mirrorCount = 0;
-    while (el && el !== document.body) {
+    while (el && el !== document.documentElement) {
       try {
-        const style = window.getComputedStyle(el);
-        const t = style.transform || style.webkitTransform || "";
-        if (t && t !== "none") {
-          if (t.includes("scaleX(-1)") || t.includes("scale(-1")) {
-            mirrorCount++;
+        // 1. Direct inline style check
+        const inlineT = (el.style && el.style.transform) ? el.style.transform.toLowerCase() : "";
+        if (
+          inlineT.includes("scalex(-1)") ||
+          inlineT.includes("scale(-1") ||
+          inlineT.includes("rotatey(180deg)") ||
+          inlineT.includes("matrix(-1")
+        ) {
+          mirrorCount++;
+        } else {
+          // 2. Computed style transform check (in Chromium, scaleX(-1) computes to matrix(-1, 0, 0, 1, 0, 0))
+          const compStyle = window.getComputedStyle(el);
+          const t = (compStyle.transform || compStyle.webkitTransform || "").toLowerCase();
+          if (t && t !== "none") {
+            if (
+              t.includes("scalex(-1)") ||
+              t.includes("scale(-1") ||
+              t.includes("rotatey(180deg)")
+            ) {
+              mirrorCount++;
+            } else if (t.startsWith("matrix(")) {
+              // 2D affine transform matrix(a, b, c, d, tx, ty) where 'a' is horizontal scale
+              const match = t.match(/^matrix\(\s*([-\d.]+)/);
+              if (match && parseFloat(match[1]) < -0.1) {
+                mirrorCount++;
+              }
+            } else if (t.startsWith("matrix3d(")) {
+              // 3D transform matrix3d(m11, ...) where 'm11' is horizontal scale
+              const match = t.match(/^matrix3d\(\s*([-\d.]+)/);
+              if (match && parseFloat(match[1]) < -0.1) {
+                mirrorCount++;
+              }
+            }
           }
         }
       } catch {}
       el = el.parentElement;
     }
+
+    // 3. Google Meet self-view detection:
+    // On meet.google.com, local self-view feeds are always mirrored.
+    if (mirrorCount % 2 === 0 && window.location.hostname.includes("meet.google.com")) {
+      const isSelf = !!(
+        video.closest("[data-self-name]") ||
+        video.closest("[data-is-self-view='true']") ||
+        video.getAttribute("data-is-self-view") === "true" ||
+        video.className.includes("self") ||
+        (video.parentElement && video.parentElement.className.includes("self"))
+      );
+      if (isSelf) return true;
+
+      // Single-video solo room check on Google Meet
+      const allMeetVideos = document.querySelectorAll("video");
+      if (allMeetVideos.length === 1) return true;
+    }
+
     return mirrorCount % 2 === 1;
   }
 
@@ -308,8 +361,22 @@
           <span id="hv-badge-title">PROTECTED</span>
           <span class="hv-hud-score" id="hv-badge-score">Scanning face...</span>
         </div>
+        <button id="hv-btn-flip" title="Toggle Mirror / Flip (⇄)" class="hv-badge-flip-btn">⇄ Flip</button>
       `;
       document.body.appendChild(hudBadge);
+
+      const flipBtn = hudBadge.querySelector("#hv-btn-flip");
+      if (flipBtn) {
+        flipBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const current = isVideoMirrored(activeVideo);
+          config.mirrorMode = current ? "unmirrored" : "mirrored";
+          if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+            chrome.storage.local.set({ mirrorMode: config.mirrorMode });
+          }
+          analyzeLiveFrame();
+        });
+      }
     }
 
     const candidates = getCandidateVideos();
@@ -500,11 +567,19 @@
           const dw = face.target.w - face.current.w;
           const dh = face.target.h - face.current.h;
 
-          // Smooth lerp (0.42)
-          face.current.x += dx * 0.42;
-          face.current.y += dy * 0.42;
-          face.current.w += dw * 0.42;
-          face.current.h += dh * 0.42;
+          // If box jumped across screen (e.g. mirror flip or initial detection), snap immediately
+          if (Math.abs(dx) > 150) {
+            face.current.x = face.target.x;
+            face.current.y = face.target.y;
+            face.current.w = face.target.w;
+            face.current.h = face.target.h;
+          } else {
+            // Smooth lerp (0.42)
+            face.current.x += dx * 0.42;
+            face.current.y += dy * 0.42;
+            face.current.w += dw * 0.42;
+            face.current.h += dh * 0.42;
+          }
 
           const el = face.overlayElement;
           if (el) {

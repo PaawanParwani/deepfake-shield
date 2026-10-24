@@ -115,6 +115,31 @@
   font-size: 10px;
 }
 
+/* 1-Click Mirror / Flip Toggle Button */
+.hv-badge-flip-btn {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-left: 6px;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.hv-badge-flip-btn:hover {
+  background: rgba(255, 255, 255, 0.35);
+  transform: scale(1.05);
+}
+
+.hv-badge-flip-btn:active {
+  transform: scale(0.95);
+}
+
 /* High-Definition Biometric Face Bounding Box */
 .hv-face-overlay {
   position: fixed;

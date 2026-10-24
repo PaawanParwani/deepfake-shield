@@ -15,6 +15,8 @@
     const btnSavePopupBackend = document.getElementById("btnSavePopupBackend");
     const endpointStatus = document.getElementById("endpointStatus");
     const btnPopoutTab = document.getElementById("btnPopoutTab");
+    const mirrorModeSelect = document.getElementById("mirrorModeSelect");
+    const mirrorVal = document.getElementById("mirrorVal");
 
     // Permission Elements
     const permissionCard = document.getElementById("permissionCard");
@@ -114,6 +116,10 @@
             precisionModeSelect.value = res.precisionMode;
             if (thresholdVal) thresholdVal.textContent = `${res.precisionMode}% Precision`;
           }
+          if (res.mirrorMode !== undefined && mirrorModeSelect) {
+            mirrorModeSelect.value = res.mirrorMode;
+            if (mirrorVal) mirrorVal.textContent = res.mirrorMode === "auto" ? "Auto" : (res.mirrorMode === "mirrored" ? "Mirrored" : "Normal");
+          }
 
           checkBackendHealth();
         }
@@ -179,6 +185,16 @@
         if (thresholdVal) thresholdVal.textContent = `${mode}% Precision`;
         if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
           chrome.storage.local.set({ precisionMode: mode, sensitivityThreshold: parseFloat(mode) / 100.0 });
+        }
+      });
+    }
+
+    if (mirrorModeSelect) {
+      mirrorModeSelect.addEventListener("change", () => {
+        const mode = mirrorModeSelect.value;
+        if (mirrorVal) mirrorVal.textContent = mode === "auto" ? "Auto" : (mode === "mirrored" ? "Mirrored" : "Normal");
+        if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.set({ mirrorMode: mode });
         }
       });
     }
