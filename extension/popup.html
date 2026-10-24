@@ -21,9 +21,16 @@
           <span class="version-tag">99% Real-Time Meeting Shield</span>
         </div>
       </div>
-      <div class="status-pill" id="backendStatusPill">
-        <span class="status-dot"></span>
-        <span id="backendStatusText">Connecting...</span>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <div class="status-pill" id="backendStatusPill">
+          <span class="status-dot"></span>
+          <span id="backendStatusText">Connecting...</span>
+        </div>
+        <button id="btnPopoutTab" title="Open Shield in Dedicated Tab" style="background: transparent; border: 1px solid var(--border-color); color: var(--text-muted); cursor: pointer; border-radius: 6px; padding: 4px; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/>
+          </svg>
+        </button>
       </div>
     </header>
 

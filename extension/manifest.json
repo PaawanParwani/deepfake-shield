@@ -24,6 +24,10 @@
       "128": "icons/icon128.png"
     }
   },
+  "options_ui": {
+    "page": "popup.html",
+    "open_in_tab": true
+  },
   "background": {
     "service_worker": "background.js"
   },

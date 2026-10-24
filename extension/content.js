@@ -893,12 +893,22 @@
       </div>
       <div class="hv-status-label">
         <span id="hv-dock-text">Deepfake Shield Active</span>
-        <span class="hv-sub" id="hv-dock-sub">Emotion & Biometric AR Shield Active</span>
+        <span class="hv-sub" id="hv-dock-sub">Voice, Video &amp; Emotion Shield Active</span>
       </div>
       <button class="hv-btn-toggle hv-active" id="hv-btn-dock-toggle">Shield ON</button>
     `;
 
     document.body.appendChild(dockPill);
+
+    dockPill.addEventListener("click", (e) => {
+      if (e.target && (e.target.id === "hv-btn-dock-toggle" || e.target.closest("#hv-btn-dock-toggle"))) return;
+      const v = findPrimaryVideo();
+      if (v) {
+        activeVideo = v;
+        attachHUD(v);
+        analyzeLiveFrame();
+      }
+    });
 
     dockPill.querySelector("#hv-btn-dock-toggle").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -983,7 +993,7 @@
       btn.className = "hv-btn-toggle hv-active";
       btn.textContent = "Shield ON";
       label.textContent = "Deepfake Shield Active";
-      sub.textContent = "Emotion & Biometric AR Shield Active";
+      sub.textContent = "Voice, Video & Emotion Shield Active";
     } else {
       btn.className = "hv-btn-toggle";
       btn.textContent = "Paused";
