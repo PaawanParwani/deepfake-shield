@@ -133,6 +133,20 @@
       </div>
     </div>
 
+    <!-- Diagnostic Self-Test Card -->
+    <div class="card settings-card" style="padding: 10px 14px;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <label style="font-size: 0.78rem; font-weight: 600; color: #94a3b8; display: block;">System Diagnostics</label>
+          <span style="font-size: 0.70rem; color: #64748b;">Verify backend, video tiles & focus</span>
+        </div>
+        <button id="btnRunSelfTest" style="background: #10b981; border: none; color: white; padding: 5px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: background 0.2s;">
+          <span>▶ Run Self-Test</span>
+        </button>
+      </div>
+      <div id="selfTestResults" style="display: none; margin-top: 10px; font-family: ui-monospace, Menlo, Monaco, Consolas, monospace; font-size: 0.70rem; line-height: 1.4; color: #cbd5e1; background: #0f172a; padding: 8px 10px; border-radius: 6px; border: 1px solid #334155; max-height: 160px; overflow-y: auto; white-space: pre-wrap;"></div>
+    </div>
+
     <!-- Telemetry: Video, Audio, Emotion -->
     <div class="card telemetry-card">
       <div class="stat-col">

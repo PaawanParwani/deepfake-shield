@@ -157,6 +157,12 @@
           .then(r => r.json())
           .then(data => callback && callback({ success: true, data }))
           .catch(err => callback && callback({ success: false, error: err.message }));
+        } else if (msg.type === "CHECK_HEALTH") {
+          const u = (msg.payload && msg.payload.backendUrl) || "http://127.0.0.1:8000";
+          fetch(u + "/health")
+            .then(r => r.json())
+            .then(data => callback && callback({ success: true, data }))
+            .catch(err => callback && callback({ success: false, error: err.message }));
         } else {
           if (callback) callback({ success: true });
         }
@@ -276,6 +282,7 @@
   <!-- Shared Box Mapping and Injected Content Script -->
   <script src="../shared/boxMapping.js"></script>
   <script src="../extension/content.js"></script>
+  <script src="../extension/pageBridge.js"></script>
 
   <script>
     // System Telemetry Reporter

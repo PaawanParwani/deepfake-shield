@@ -49,6 +49,24 @@
       "js": ["boxMapping.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "https://*.zoom.us/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://*.webex.com/*",
+        "https://discord.com/*",
+        "https://deepfake-shield.pages.dev/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://www.youtube.com/*"
+      ],
+      "all_frames": false,
+      "js": ["pageBridge.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ],
   "icons": {
@@ -58,7 +76,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["permissions.html", "icons/*"],
+      "resources": ["permissions.html", "pageBridge.js", "icons/*"],
       "matches": ["<all_urls>"]
     }
   ]

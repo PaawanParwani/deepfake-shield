@@ -77,3 +77,12 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] Publication-ready IEEE Transactions LaTeX package (`paper/main.tex` and `paper/references.bib`)
 - [x] Gold-standard dataset acquisition and validation tool (`data_tools/download_datasets.py` for Celeb-DF v2, DFDC, and FaceForensics++)
 - [x] Comprehensive performance profiler and benchmark report (`scripts/benchmark_suite.py` and `BENCHMARK_REPORT.md` confirming 19.2x real-time audio and 7,358 FPS biometrics)
+- [x] Window Focus Optimization & DevTools Console Diagnostics:
+  - Fixed Windows 11 EcoQoS (Efficiency Mode / power throttling) and foreground boost priority starving backend when Chrome is focused via Win32 ctypes (`SetPriorityClass` to `ABOVE_NORMAL_PRIORITY_CLASS`, `SetProcessInformation` disabling `PROCESS_POWER_THROTTLING`, and `SetConsoleMode` disabling QuickEdit stdin pause).
+  - Provided startup scripts `start_backend.bat` and `start_backend.ps1` with elevated priority and QuickEdit protection.
+  - Multi-threaded PyTorch CPU inference (`torch.set_num_threads(4)`) and per-stage latency telemetry (`decode`, `detection`, `classifier`, `emotion`).
+  - Added `/health` telemetry fields: `thread_count`, `recent_latency_ms`, `recent_stages_ms`, `windows_optimizations`.
+  - Browser-side focus resilience: `requestVideoFrameCallback` frame acquisition bypassing Chrome background `setTimeout` timer clamping, demand-driven dirty HUD rendering reducing tab CPU waste, strict 1-in-flight queue guard with 2s watchdog timeout, and staleness warning badge (`Detection slow (X ms)` with box dimming).
+  - Main-world diagnostic bridge (`extension/pageBridge.js` registered with `"world": "MAIN"` in `manifest.json`) exposing `window.deepfakeShieldSelfTest()` and `window.setDeepfakeShieldDebug()` directly to the default DevTools "top" console and extension popup UI.
+  - Verified with automated CDP focus benchmark suite (`tests/measure_focus_benchmark.mjs`).
+

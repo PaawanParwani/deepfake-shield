@@ -595,7 +595,19 @@
 
     tile.videoObserver.observe(video, { attributes: true, attributeFilter: ["style", "class"] });
 
+    if (typeof video.requestVideoFrameCallback === "function") {
+      const onVfc = (now) => {
+        if (!document.body.contains(video)) return;
+        if (config.enabled && !tile.inFlight && (now - tile.lastScanTs >= config.minTileScanIntervalMs)) {
+          executeTileScan(tile);
+        }
+        video.requestVideoFrameCallback(onVfc);
+      };
+      video.requestVideoFrameCallback(onVfc);
+    }
+
     repositionTileBadge(tile);
+    markHUDDirty();
     return tile;
   }
 
@@ -713,6 +725,18 @@
       left: `${Math.round(rect.left + 14)}px`,
       top: `${Math.round(rect.top + 14)}px`
     });
+
+    // Staleness visibility: if last successful inference is older than 2s, warn user and dim old boxes
+    const now = performance.now();
+    if (tile.lastSuccessTs && now - tile.lastSuccessTs > 2000) {
+      const elapsed = Math.round(now - tile.lastSuccessTs);
+      const scoreSpan = tile.hudBadge.querySelector(".hv-badge-score");
+      if (scoreSpan) scoreSpan.textContent = `Detection slow (${elapsed}ms)`;
+      tile.hudBadge.className = "hv-hud-badge hv-uncertain";
+      for (const [, f] of tile.trackedFaces) {
+        f.opacity = Math.max(0.15, f.opacity - 0.05);
+      }
+    }
   }
 
   function hideAllOverlays() {
@@ -955,52 +979,75 @@
   }
 
   // =========================================================================
-  // 60 FPS Decoupled Smooth AF-LOCK Reticle Renderer (Zero Layout Thrashing)
+  // Demand-Driven AF-LOCK Reticle Renderer (Draw Only When Boxes Change)
   // =========================================================================
 
-  function render60FPSHUD() {
+  let hudDirty = true;
+  let hudAnimScheduled = false;
+
+  function markHUDDirty() {
+    hudDirty = true;
+    if (!hudAnimScheduled) {
+      hudAnimScheduled = true;
+      hudAnimId = requestAnimationFrame(renderHUDOnDemand);
+    }
+  }
+
+  function renderHUDOnDemand() {
+    hudAnimScheduled = false;
     if (!config.enabled) {
       if (hudCtx && hudCanvas) {
         hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
       }
-      hudAnimId = requestAnimationFrame(render60FPSHUD);
       return;
     }
 
-    if (hudCanvas && hudCtx) {
-      resizeHUDCanvas();
-      hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+    if (!hudCanvas || !hudCtx) return;
 
-      const LERP = 0.42;
+    resizeHUDCanvas();
+    hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
 
-      for (const [, tile] of tileContexts) {
-        if (!tile.video || !document.body.contains(tile.video)) continue;
+    const LERP = 0.42;
+    let stillAnimating = false;
 
-        for (const [, f] of tile.trackedFaces) {
-          // Smooth glide toward target box
-          f.curX1 += (f.tgtX1 - f.curX1) * LERP;
-          f.curY1 += (f.tgtY1 - f.curY1) * LERP;
-          f.curX2 += (f.tgtX2 - f.curX2) * LERP;
-          f.curY2 += (f.tgtY2 - f.curY2) * LERP;
-          f.opacity = Math.min(1.0, f.opacity + 0.15);
+    for (const [, tile] of tileContexts) {
+      if (!tile.video || !document.body.contains(tile.video)) continue;
 
-          // Draw reference AF-LOCK corner brackets and crosshair using shared module
-          boxEngine.drawAFLockReticle(
-            hudCtx,
-            f.curX1,
-            f.curY1,
-            f.curX2,
-            f.curY2,
-            f,
-            f.index,
-            f.opacity,
-            hudCanvas.width
-          );
+      for (const [, f] of tile.trackedFaces) {
+        const dx = f.tgtX1 - f.curX1;
+        const dy = f.tgtY1 - f.curY1;
+        const dw = f.tgtX2 - f.curX2;
+        const dh = f.tgtY2 - f.curY2;
+
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5 || Math.abs(dw) > 0.5 || Math.abs(dh) > 0.5) {
+          stillAnimating = true;
         }
+
+        // Smooth glide toward target box
+        f.curX1 += dx * LERP;
+        f.curY1 += dy * LERP;
+        f.curX2 += dw * LERP;
+        f.curY2 += dh * LERP;
+        f.opacity = Math.min(1.0, f.opacity + 0.15);
+
+        // Draw reference AF-LOCK corner brackets and crosshair using shared module
+        boxEngine.drawAFLockReticle(
+          hudCtx,
+          f.curX1,
+          f.curY1,
+          f.curX2,
+          f.curY2,
+          f,
+          f.index,
+          f.opacity,
+          hudCanvas.width
+        );
       }
     }
 
-    hudAnimId = requestAnimationFrame(render60FPSHUD);
+    if (stillAnimating) {
+      markHUDDirty();
+    }
   }
 
   // =========================================================================
@@ -1035,15 +1082,9 @@
     return candidates[0].tile;
   }
 
-  async function scheduleScanCycle() {
-    if (!config.enabled || document.hidden) return;
-
+  function executeTileScan(tile) {
+    if (!config.enabled || tile.inFlight) return;
     const now = performance.now();
-    if (now - lastGlobalScanTs < config.minGlobalIntervalMs) return;
-
-    const tile = selectNextScheduledTile();
-    if (!tile) return;
-
     tile.inFlight = true;
     lastGlobalScanTs = now;
     const reqStart = performance.now();
@@ -1053,7 +1094,7 @@
         tile.inFlight = false;
         tile.lastScanTs = performance.now();
       }
-    }, 6000);
+    }, 2000);
 
     try {
       const capture = captureCompactFrame(tile.video);
@@ -1085,9 +1126,17 @@
               return;
             }
 
+            tile.lastSuccessTs = performance.now();
             const clientLatency = Math.round(performance.now() - reqStart);
+            tile.lastLatencyMs = clientLatency;
+            if (response.data) {
+              tile.lastBackendLatencyMs = response.data.latency_ms;
+              tile.lastStagesMs = response.data.stages_ms;
+            }
+
             try {
               processTileDetections(tile, response.data, capture, clientLatency);
+              markHUDDirty();
             } catch (err) {
               lastError = err.message;
               debugLog("Tile detection processing error:", err);
@@ -1103,6 +1152,17 @@
       clearTimeout(watchdogTimer);
       tile.inFlight = false;
     }
+  }
+
+  async function scheduleScanCycle() {
+    if (!config.enabled || document.hidden) return;
+
+    const now = performance.now();
+    if (now - lastGlobalScanTs < config.minGlobalIntervalMs) return;
+
+    const tile = selectNextScheduledTile();
+    if (!tile) return;
+    executeTileScan(tile);
   }
 
   async function startSchedulerLoop() {
@@ -1285,28 +1345,59 @@
     return list;
   };
 
-  // Developer & Diagnostic Self-Test Console Command
-  window.deepfakeShieldSelfTest = async function () {
-    console.group("%c[Deepfake Shield Diagnostics & Self-Test]", "color:#10b981;font-weight:bold;font-size:14px;");
-
-    // 1. Backend Connectivity
-    let backendStatus = "UNKNOWN";
+  // Inject pageBridge.js into DOM to ensure window.deepfakeShieldSelfTest is reachable in page context
+  function ensurePageBridge() {
+    if (document.getElementById("hv-page-bridge-script")) return;
     try {
-      const resp = await fetch(`${config.backendUrl}/health`);
-      if (resp.ok) {
-        const h = await resp.json();
-        backendStatus = `ONLINE (${h.status}, video: ${h.video_status}, device: ${h.device})`;
+      const script = document.createElement("script");
+      script.id = "hv-page-bridge-script";
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) {
+        script.src = chrome.runtime.getURL("pageBridge.js");
       } else {
-        backendStatus = `HTTP ${resp.status}`;
+        script.src = "../extension/pageBridge.js";
+      }
+      (document.head || document.documentElement).appendChild(script);
+    } catch {}
+  }
+  ensurePageBridge();
+
+  async function collectSelfTestData(hasFocus) {
+    let backendStatus = "UNKNOWN";
+    let healthDetails = null;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1800);
+
+    try {
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+        const res = await new Promise((resolve) => {
+          chrome.runtime.sendMessage({ type: "CHECK_HEALTH", payload: { backendUrl: config.backendUrl } }, (resp) => {
+            resolve(resp);
+          });
+        });
+        if (res && res.success && res.data) {
+          healthDetails = res.data;
+        }
+      } else {
+        const resp = await fetch(`${config.backendUrl}/health`, { signal: controller.signal });
+        if (resp.ok) {
+          healthDetails = await resp.json();
+        }
+      }
+      clearTimeout(timeoutId);
+
+      if (healthDetails) {
+        const prio = healthDetails.windows_optimizations ? healthDetails.windows_optimizations.priority : "normal";
+        const thr = healthDetails.thread_count || 1;
+        backendStatus = `ONLINE (${healthDetails.status}, video: ${healthDetails.video_status}, device: ${healthDetails.device}, threads: ${thr}, priority: ${prio})`;
+      } else {
+        backendStatus = "OFFLINE (No response from /health)";
       }
     } catch (err) {
+      clearTimeout(timeoutId);
       backendStatus = `OFFLINE (${err.message})`;
     }
-    console.log(`%c• Backend Server (${config.backendUrl}):%c ${backendStatus}`, "font-weight:bold;", "color:#0ea5e9;");
 
-    // 2. Video Candidate Audit
     const allVideos = Array.from(document.querySelectorAll("video"));
-    console.log(`%c• Total <video> tags in DOM:%c ${allVideos.length}`, "font-weight:bold;", "color:#0ea5e9;");
     const videoAudit = allVideos.map((v, i) => {
       const evalRes = evaluateVideoCandidate(v);
       const r = v.getBoundingClientRect();
@@ -1317,13 +1408,10 @@
         Reason: evalRes.reason,
         Resolution: `${v.videoWidth}x${v.videoHeight}`,
         DOMRect: `${Math.round(r.left)},${Math.round(r.top)} (${Math.round(r.width)}x${Math.round(r.height)})`,
-        Parent: v.parentElement ? `${v.parentElement.tagName.toLowerCase()}.${v.parentElement.className.split(" ")[0]}` : "none"
+        StreamActive: Boolean(v.srcObject && v.srcObject.active)
       };
     });
-    console.table(videoAudit);
 
-    // 3. Active Tiles
-    console.log(`%c• Active Tracked Tiles:%c ${tileContexts.size}`, "font-weight:bold;", "color:#0ea5e9;");
     const tileAudit = Array.from(tileContexts.values()).map((t) => {
       const m = resolveTileMirrorState(t);
       return {
@@ -1333,27 +1421,89 @@
         MirrorState: `${m.shouldFlip ? "MIRRORED" : "NORMAL"} (${m.modeLabel})`,
         FacesTracked: t.trackedFaces.size,
         LastVerdict: t.lastVerdict,
-        InFlight: t.inFlight ? "YES" : "NO"
+        InFlight: t.inFlight ? "YES" : "NO",
+        LastLatencyMs: t.lastLatencyMs || 0
       };
     });
-    console.table(tileAudit);
 
-    // 4. Last Detection Response Shape
-    console.log("%c• Last Backend Response Sample:%c", "font-weight:bold;", "color:#0ea5e9;");
-    console.dir(lastBackendResponse || "None received yet");
+    const activeTileList = Array.from(tileContexts.values());
+    const avgLatency = activeTileList.length > 0 && activeTileList[0].lastLatencyMs ? activeTileList[0].lastLatencyMs : (healthDetails ? healthDetails.recent_latency_ms : 0);
 
-    if (lastError) {
-      console.warn(`Last encountered error: ${lastError}`);
-    }
-
-    console.groupEnd();
     return {
+      backendUrl: config.backendUrl,
       backendStatus,
+      healthDetails,
+      windowFocused: hasFocus !== undefined ? hasFocus : document.hasFocus(),
       totalVideos: allVideos.length,
+      videoAudit,
       activeTiles: tileContexts.size,
+      tileAudit,
       lastBackendResponse,
-      lastError
+      lastError,
+      latencyMetrics: {
+        rttMs: avgLatency,
+        backendLatencyMs: healthDetails ? healthDetails.recent_latency_ms : 0,
+        stagesMs: activeTileList.length > 0 && activeTileList[0].lastStagesMs ? activeTileList[0].lastStagesMs : (healthDetails ? healthDetails.recent_stages_ms : {}),
+        inFlight: activeTileList.filter(t => t.inFlight).length
+      }
     };
+  }
+
+  // Listen for self-test requests from main-world page bridge via postMessage
+  window.addEventListener("message", async (event) => {
+    if (!event.data) return;
+    if (event.data.type === "HV_SHIELD_SELF_TEST_REQ") {
+      const reqId = event.data.reqId || 0;
+      const testData = await collectSelfTestData(event.data.hasFocus !== undefined ? event.data.hasFocus : document.hasFocus());
+      window.postMessage({ type: "HV_SHIELD_SELF_TEST_RES", reqId, data: testData }, "*");
+    } else if (event.data.type === "HV_SHIELD_SET_DEBUG") {
+      config.debug = Boolean(event.data.enabled);
+    }
+  });
+
+  window.addEventListener("HV_SHIELD_SET_DEBUG", (event) => {
+    if (event.detail && typeof event.detail.enabled === "boolean") {
+      config.debug = event.detail.enabled;
+    }
+  });
+
+  // Listen for popup requests
+  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg.type === "RUN_SELF_TEST") {
+        collectSelfTestData(document.hasFocus()).then((data) => {
+          sendResponse({ success: true, data });
+        });
+        return true;
+      }
+    });
+  }
+
+  // Developer & Diagnostic Self-Test Console Command (in-isolated-world fallback)
+  window.deepfakeShieldSelfTest = async function () {
+    const data = await collectSelfTestData(document.hasFocus());
+    console.group("%c[Deepfake Shield Diagnostics & Self-Test]", "color:#10b981;font-weight:bold;font-size:14px;");
+    console.log(`%c• Window Focus State:%c ${data.windowFocused ? "FOCUSED (Meet in foreground)" : "UNFOCUSED (Terminal in foreground)"}`, "font-weight:bold;", `color:${data.windowFocused ? '#10b981' : '#f59e0b'};font-weight:bold;`);
+    console.log(`%c• Backend Server (${data.backendUrl}):%c ${data.backendStatus}`, "font-weight:bold;", "color:#0ea5e9;");
+    if (data.healthDetails) console.log("  Health Info:", data.healthDetails);
+    if (data.latencyMetrics) {
+      console.log(`%c• Performance Metrics:%c RTT: ${data.latencyMetrics.rttMs}ms | Backend: ${data.latencyMetrics.backendLatencyMs}ms | In-Flight: ${data.latencyMetrics.inFlight}`, "font-weight:bold;", "color:#a855f7;");
+    }
+    console.log(`%c• Total <video> tags in DOM:%c ${data.totalVideos}`, "font-weight:bold;", "color:#0ea5e9;");
+    console.table(data.videoAudit);
+    console.log(`%c• Active Tracked Tiles:%c ${data.activeTiles}`, "font-weight:bold;", "color:#0ea5e9;");
+    console.table(data.tileAudit);
+    console.log("%c• Last Backend Response Sample:%c", "font-weight:bold;", "color:#0ea5e9;");
+    console.dir(data.lastBackendResponse || "None received yet");
+    if (data.lastError) console.warn(`Last encountered error: ${data.lastError}`);
+    console.groupEnd();
+    return data;
+  };
+
+  window.setDeepfakeShieldDebug = function (enabled) {
+    config.debug = Boolean(enabled);
+    console.log(`[Deepfake Shield] Debug logging set to: ${config.debug}`);
+    return config.debug;
   };
 
   // Initialize

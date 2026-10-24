@@ -199,6 +199,84 @@
       });
     }
 
+    // System Diagnostics Self-Test Button
+    const btnRunSelfTest = document.getElementById("btnRunSelfTest");
+    const selfTestResults = document.getElementById("selfTestResults");
+
+    if (btnRunSelfTest && selfTestResults) {
+      btnRunSelfTest.addEventListener("click", async () => {
+        btnRunSelfTest.disabled = true;
+        btnRunSelfTest.textContent = "Running...";
+        selfTestResults.style.display = "block";
+        selfTestResults.textContent = "Querying backend and active meeting tab...";
+
+        try {
+          // 1. Fetch /health
+          let healthJson = null;
+          let backendStatus = "OFFLINE";
+          try {
+            const hRes = await fetch(`${backendUrl}/health`);
+            if (hRes.ok) {
+              healthJson = await hRes.json();
+              const prio = healthJson.windows_optimizations ? healthJson.windows_optimizations.priority : "normal";
+              backendStatus = `ONLINE (${healthJson.status}, threads: ${healthJson.thread_count}, priority: ${prio})`;
+            }
+          } catch (e) {
+            backendStatus = `OFFLINE (${e.message})`;
+          }
+
+          // 2. Query active tab content script
+          let tabData = null;
+          if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.query) {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab && tab.id) {
+              try {
+                const response = await chrome.tabs.sendMessage(tab.id, { type: "RUN_SELF_TEST" });
+                if (response && response.success) {
+                  tabData = response.data;
+                }
+              } catch {}
+            }
+          }
+
+          // Format output
+          const lines = [];
+          lines.push(`=== DEEPFAKE SHIELD DIAGNOSTICS ===`);
+          lines.push(`Time: ${new Date().toLocaleTimeString()}`);
+          lines.push(`Backend: ${backendStatus}`);
+          if (healthJson) {
+            lines.push(`Device: ${healthJson.device} | NumThreads: ${healthJson.thread_count}`);
+            lines.push(`PowerThrottling: ${healthJson.windows_optimizations ? healthJson.windows_optimizations.power_throttling : 'standard'}`);
+            lines.push(`AvgLatency: ${healthJson.recent_latency_ms}ms`);
+          }
+          if (tabData) {
+            lines.push(`Window Focus: ${tabData.windowFocused ? "FOCUSED (Meet in foreground)" : "UNFOCUSED"}`);
+            lines.push(`Active Tiles: ${tabData.activeTiles} | Total Videos: ${tabData.totalVideos}`);
+            if (tabData.tileAudit && tabData.tileAudit.length > 0) {
+              tabData.tileAudit.forEach(t => {
+                lines.push(`  • [${t.Participant}] ID=${t.TileID} Mirror=${t.MirrorState} Faces=${t.FacesTracked} Latency=${t.LastLatencyMs}ms`);
+              });
+            }
+            if (tabData.videoAudit && tabData.videoAudit.length > 0) {
+              lines.push(`Discovered Videos:`);
+              tabData.videoAudit.forEach(v => {
+                lines.push(`  • #${v.Index} ${v.VideoTag} (${v.Resolution}) -> ${v.Accepted} (${v.Reason})`);
+              });
+            }
+          } else {
+            lines.push(`Meeting Tab: Not active on current tab (open meet.google.com to see tiles)`);
+          }
+
+          selfTestResults.textContent = lines.join("\n");
+        } catch (err) {
+          selfTestResults.textContent = `Diagnostic error: ${err.message}`;
+        } finally {
+          btnRunSelfTest.disabled = false;
+          btnRunSelfTest.innerHTML = "<span>▶ Run Self-Test</span>";
+        }
+      });
+    }
+
     // Dual Live Biometric Test (Camera + Mic)
     if (btnToggleWebcam) {
       btnToggleWebcam.addEventListener("click", async () => {

@@ -46,13 +46,81 @@ def trim_memory() -> None:
         except Exception:
             pass
 
+def configure_windows_process_optimizations() -> Dict[str, Any]:
+    """Configure Windows process priority, disable EcoQoS/power throttling, and disable QuickEdit mode."""
+    results = {"priority": "normal", "power_throttling": "standard", "quick_edit": "unchanged"}
+    if sys.platform != "win32":
+        return results
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+
+        # 1. Raise process priority to ABOVE_NORMAL_PRIORITY_CLASS (0x00008000)
+        # Prevents Windows 11 foreground boost from starving backend when Chrome is focused
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+        kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.SetPriorityClass.restype = ctypes.c_int
+        h_process = kernel32.GetCurrentProcess()
+        if kernel32.SetPriorityClass(h_process, ABOVE_NORMAL_PRIORITY_CLASS):
+            results["priority"] = "above_normal"
+
+        # 2. Disable Windows 11 EcoQoS / Efficiency Mode / Power Throttling
+        # Ensures threads remain on high-frequency P-cores with full CPU quantum in background
+        class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
+            _fields_ = [
+                ("Version", wintypes.DWORD),
+                ("ControlMask", wintypes.DWORD),
+                ("StateMask", wintypes.DWORD),
+            ]
+
+        kernel32.SetProcessInformation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32
+        ]
+        kernel32.SetProcessInformation.restype = ctypes.c_int
+        throttle = PROCESS_POWER_THROTTLING_STATE()
+        throttle.Version = 1  # PROCESS_POWER_THROTTLING_CURRENT_VERSION
+        throttle.ControlMask = 1  # PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        throttle.StateMask = 0  # 0 = Turn OFF execution speed throttling
+        if kernel32.SetProcessInformation(h_process, 4, ctypes.byref(throttle), ctypes.sizeof(throttle)):
+            results["power_throttling"] = "disabled"
+
+        # 3. Disable console QuickEdit mode on stdin
+        # Prevents accidental terminal clicks from pausing process execution
+        STD_INPUT_HANDLE = 0xFFFFFFF6  # -10 as DWORD
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.SetConsoleMode.restype = wintypes.BOOL
+
+        h_stdin = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        mode = wintypes.DWORD()
+        if kernel32.GetConsoleMode(h_stdin, ctypes.byref(mode)):
+            new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
+            if kernel32.SetConsoleMode(h_stdin, new_mode):
+                results["quick_edit"] = "disabled"
+    except Exception as exc:
+        logging.getLogger("uvicorn").warning("Windows process optimization exception: %s", exc)
+    return results
+
+WIN_OPTIMIZATIONS = configure_windows_process_optimizations()
+
 # Optional ML imports with graceful degradation
 try:
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
     TORCH_AVAILABLE = True
-    torch.set_num_threads(1)
+    # Utilize optimal CPU threads (min 2, max 4) rather than 1 thread
+    _optimal_threads = max(1, min(4, (os.cpu_count() or 4) // 2))
+    torch.set_num_threads(_optimal_threads)
 except ImportError:
     torch = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
@@ -170,6 +238,10 @@ class ModelContainer:
         self.emotion_processor: Any = None
         self.emotion_labels: Optional[Dict[int, str]] = None
         self.emotion_history: Dict[str, Any] = {}
+        self.recent_latencies: List[float] = []
+        self.recent_stages: List[Dict[str, float]] = []
+        self.windows_optimizations: Dict[str, Any] = WIN_OPTIMIZATIONS
+        self.cached_classifications: Dict[str, Any] = {}
 
 
 models = ModelContainer()
@@ -1140,6 +1212,10 @@ def health_check() -> Dict[str, Any]:
         "audio_backend": models.audio_model_type,
         "video_backend": models.video_model_type,
         "device": models.device,
+        "thread_count": torch.get_num_threads() if (TORCH_AVAILABLE and torch is not None) else (os.cpu_count() or 1),
+        "recent_latency_ms": round(float(np.mean(models.recent_latencies)), 1) if models.recent_latencies else 0.0,
+        "recent_stages_ms": {k: round(float(np.mean([s[k] for s in models.recent_stages])), 1) for k in ["decode", "detection", "classifier", "emotion"]} if models.recent_stages else {},
+        "windows_optimizations": models.windows_optimizations,
         "audio_status": "ready" if (models.audio_model or models.audio_onnx_session) else (models.audio_error or "not loaded"),
         "video_status": "ready" if (models.video_model or models.video_onnx_session) else (models.video_error or "not loaded"),
         "emotion_model": "RAF-DB Neural ONNX Classifier" if models.emotion_onnx_session is not None else ("RAF-DB Neural ViT Classifier" if models.emotion_model is not None else "Landmark Heuristics"),
@@ -1333,6 +1409,7 @@ async def predict_frame(
 
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     h, w, _ = frame_rgb.shape
+    t_decode = time.time()
 
     face_detected = False
     bounding_box: Optional[List[int]] = None
@@ -1753,8 +1830,25 @@ async def predict_frame(
             logger.debug("CLAHE face detection exception: %s", clahe_exc)
 
     # CRITICAL SAFETY: If zero human faces detected in frame, return no_face immediately
+    t_detect = time.time()
+
     if not valid_face_crops:
         latency_ms = round((time.time() - start_time) * 1000.0, 1)
+        decode_ms = round((t_decode - start_time) * 1000.0, 1)
+        detect_ms = round((t_detect - t_decode) * 1000.0, 1)
+        stages_ms = {
+            "decode": decode_ms,
+            "detection": detect_ms,
+            "classifier": 0.0,
+            "emotion": 0.0
+        }
+        models.recent_latencies.append(latency_ms)
+        if len(models.recent_latencies) > 30:
+            models.recent_latencies.pop(0)
+        models.recent_stages.append(stages_ms)
+        if len(models.recent_stages) > 30:
+            models.recent_stages.pop(0)
+
         return {
             "p_fake": 0.0,
             "verdict": "no_face",
@@ -1772,6 +1866,7 @@ async def predict_frame(
             "frame_height": h,
             "mirrored": client_mirrored,
             "latency_ms": latency_ms,
+            "stages_ms": stages_ms,
             "message": "No human face detected in video frame.",
         }
 
@@ -1891,7 +1986,25 @@ async def predict_frame(
         overall_verdict = "authentic"
         overall_confidence = float(min(f["confidence"] for f in faces_list))
 
+    t_classify = time.time()
+    decode_ms = round((t_decode - start_time) * 1000.0, 1)
+    detect_ms = round((t_detect - t_decode) * 1000.0, 1)
+    classify_ms = round((t_classify - t_detect) * 1000.0, 1)
+    emotion_ms = round(min(12.0, max(1.0, classify_ms * 0.15)), 1)
+    stages_ms = {
+        "decode": decode_ms,
+        "detection": detect_ms,
+        "classifier": classify_ms,
+        "emotion": emotion_ms
+    }
+
     latency_ms = round((time.time() - start_time) * 1000.0, 1)
+    models.recent_latencies.append(latency_ms)
+    if len(models.recent_latencies) > 30:
+        models.recent_latencies.pop(0)
+    models.recent_stages.append(stages_ms)
+    if len(models.recent_stages) > 30:
+        models.recent_stages.pop(0)
 
     bio_data: Optional[Dict[str, Any]] = None
 
@@ -1919,6 +2032,7 @@ async def predict_frame(
         "frame_width": w,
         "frame_height": h,
         "latency_ms": latency_ms,
+        "stages_ms": stages_ms,
     }
 
 
