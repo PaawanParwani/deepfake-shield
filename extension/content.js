@@ -1,4 +1,4 @@
-// Human Verification — Real-Time Google Meet & Video Call Shield
+// Deepfake Shield — Real-Time Multi-Tile & Multi-Face Google Meet Protection
 (function () {
   "use strict";
 
@@ -7,58 +7,44 @@
   if (window.__HV_SHIELD_INJECTED__) return;
   window.__HV_SHIELD_INJECTED__ = true;
 
-  let config = {
+  // Runtime configuration
+  // NOTE: mirrorMode is strictly PER-TILE and defaults to "auto" on every page load.
+  // We intentionally do NOT persist a global mirrorMode override to avoid corrupting remote tiles.
+  const config = {
     enabled: true,
     backendUrl: "http://127.0.0.1:8000",
-    scanIntervalMs: 500,
-    scanIntervalLockedMs: 500,
-    sensitivityThreshold: 0.88,
-    mirrorMode: "auto",
+    minTileScanIntervalMs: 500, // Cooldown between scans of the same tile
+    globalScanTickMs: 120,      // Scheduler tick rate
+    minGlobalIntervalMs: 250,   // Rate limit: max 4 requests/sec across all tiles combined
     debug: false
   };
 
-  // State
-  let inFlight = false;
-  let activeVideo = null;
-  let activeVideoResizeObserver = null;
-  let activeVideoMutationObserver = null;
-  let hudBadge = null;
+  // Global state
   let overlayRoot = null;
   let dockPill = null;
-  let consecutiveNoFaceCount = 0;
-  let consecutiveBackendFailures = 0;
-  let loopRunning = false;
-  let lastCapturedW = 320;
-  let lastCapturedH = 180;
+  let schedulerRunning = false;
+  let lastGlobalScanTs = 0;
+  let tileIdCounter = 0;
 
-  // Active Multi-Face Tracking Map: id -> TrackedFace
-  const trackedFaces = new Map();
-  let faceIdCounter = 0;
+  // Active Video Tile Contexts: Map<HTMLVideoElement, TileContext>
+  const tileContexts = new Map();
 
-  // ---- Cached mirror state (recomputed only on observer events or every 1s) ----
-  let cachedMirrorResult = { shouldFlip: false, modeLabel: "auto", mirrorInfo: { isMirrored: false, scaleX: 1, transforms: [] } };
-  let cachedMirrorTs = 0;
-  const MIRROR_CACHE_TTL_MS = 1000;
-
-  // ---- Cached video geometry (recomputed at most once per rAF) ----
-  let cachedGeom = null;
-  let cachedGeomFrameId = -1;
-
-  // ---- Mutation observer feedback-loop guard ----
+  // Watchdog & mutation safety
   let writingOwnStyle = false;
-  let rafScheduled = false;
-
-  // ---- Runaway guard: >30 observer callbacks in 1s → emergency stop ----
+  let globalChildObserver = null;
+  let observerPaused = false;
   let observerCallCount = 0;
   let observerCallWindowStart = 0;
-  let observerStopped = false;
 
-  // ---- Rate-limited debug log ----
+  // Rate-limited debug logging
   let lastDebugLogTs = 0;
-
   function debugLog(...args) {
     if (config.debug) {
-      console.log("%c[DS]", "color:#0ea5e9;font-weight:bold", ...args);
+      const now = performance.now();
+      if (now - lastDebugLogTs > 2000) {
+        lastDebugLogTs = now;
+        console.log("%c[Deepfake Shield]", "color: #0ea5e9; font-weight: bold;", ...args);
+      }
     }
   }
 
@@ -66,9 +52,6 @@
   if (typeof window !== "undefined") {
     window.setDeepfakeShieldDebug = function (enabled) {
       config.debug = Boolean(enabled);
-      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ debug: config.debug });
-      }
       console.log(`[Deepfake Shield] Debug logging set to: ${config.debug}`);
     };
   }
@@ -87,44 +70,39 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  // Sync extension storage config
+  // Storage sync for enabled status and backendUrl
   if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(
-      ["enabled", "backendUrl", "scanIntervalMs", "scanIntervalLockedMs", "sensitivityThreshold", "mirrorMode", "debug"],
-      (stored) => {
-        if (stored) {
-          if (!stored.backendUrl || stored.backendUrl.includes("localhost") || stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend")) {
-            stored.backendUrl = "http://127.0.0.1:8000";
-            chrome.storage.local.set({ backendUrl: "http://127.0.0.1:8000" });
-          }
-          if (stored.mirrorMode === undefined || stored.mirrorMode === null) {
-            stored.mirrorMode = "auto";
-          }
-          config = { ...config, ...stored };
+    chrome.storage.local.get(["enabled", "backendUrl"], (stored) => {
+      if (stored) {
+        if (!stored.backendUrl || stored.backendUrl.includes("localhost") || stored.backendUrl.includes("onrender.com")) {
+          stored.backendUrl = "http://127.0.0.1:8000";
         }
-        updateDockPill();
-        updateFlipButtonLabel();
+        if (stored.enabled !== undefined) {
+          config.enabled = Boolean(stored.enabled);
+        }
+        config.backendUrl = stored.backendUrl;
       }
-    );
+      updateDockPill();
+    });
 
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local") {
-        for (let k in changes) {
-          if (k === "backendUrl") {
-            const v = changes[k].newValue;
-            config.backendUrl = (!v || v.includes("localhost") || v.includes("onrender.com")) ? "http://127.0.0.1:8000" : v;
-          } else if (k in config) {
-            config[k] = changes[k].newValue;
+        if (changes.enabled) {
+          config.enabled = Boolean(changes.enabled.newValue);
+          updateDockPill();
+          if (!config.enabled) {
+            hideAllOverlays();
           }
         }
-        updateDockPill();
-        updateFlipButtonLabel();
-        invalidateMirrorCache();
+        if (changes.backendUrl) {
+          const v = changes.backendUrl.newValue;
+          config.backendUrl = (!v || v.includes("localhost") || v.includes("onrender.com")) ? "http://127.0.0.1:8000" : v;
+        }
       }
     });
   }
 
-  // Fixed Viewport Overlay Root
+  // Shared Fixed Viewport Overlay Root (Immune to parent transforms & overflow clipping)
   function getOrCreateOverlayRoot() {
     if (overlayRoot && document.body.contains(overlayRoot)) return overlayRoot;
     let root = document.getElementById("hv-overlay-root");
@@ -137,7 +115,18 @@
     return overlayRoot;
   }
 
-  // Lightweight 320p Compact Frame Capture
+  // Safe style application (prevents MutationObserver feedback loops)
+  function safeSetStyle(el, styles) {
+    writingOwnStyle = true;
+    for (const [k, v] of Object.entries(styles)) {
+      el.style[k] = v;
+    }
+    Promise.resolve().then(() => {
+      writingOwnStyle = false;
+    });
+  }
+
+  // Lightweight 320p Frame Capture via Offscreen Canvas (~15KB JPEG)
   const offscreenCanvas = document.createElement("canvas");
   const offscreenCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -162,25 +151,22 @@
       offscreenCtx.imageSmoothingQuality = "medium";
       offscreenCtx.drawImage(video, 0, 0, targetW, targetH);
 
-      lastCapturedW = targetW;
-      lastCapturedH = targetH;
-
       return {
         dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.75),
         capturedW: targetW,
         capturedH: targetH
       };
-    } catch (err) {
+    } catch {
       return null;
     }
   }
 
-  // ---- CSS Transform Matrix Parsing ----
+  // ==========================================
+  // CSS Transform Matrix Analysis & Mirroring
+  // ==========================================
 
   function parseTransform2D(transformStr) {
-    if (!transformStr || transformStr === "none") {
-      return [1, 0, 0, 1];
-    }
+    if (!transformStr || transformStr === "none") return [1, 0, 0, 1];
     const t = transformStr.trim().toLowerCase();
     if (t.startsWith("matrix(")) {
       const parts = t.slice(7, -1).split(",").map((s) => parseFloat(s.trim()));
@@ -207,6 +193,7 @@
     ];
   }
 
+  // Inspects the ancestor transform hierarchy of a SPECIFIC video element
   function detectVideoMirroring(video) {
     if (!video) return { isMirrored: false, scaleX: 1, transforms: [] };
 
@@ -219,8 +206,8 @@
         const compStyle = window.getComputedStyle(el);
         const t = (compStyle.transform || compStyle.webkitTransform || "").trim();
         if (t && t !== "none") {
-          const identifier = `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className ? '.' + String(el.className).trim().split(/\s+/)[0] : ''}`;
-          transforms.push(`${identifier}: ${t}`);
+          const id = `${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}`;
+          transforms.push(`${id}: ${t}`);
           chain.push(parseTransform2D(t));
         }
       } catch {}
@@ -238,39 +225,36 @@
     return { isMirrored, scaleX, cumulative, transforms };
   }
 
-  // ---- Cached mirror resolution ----
-
-  function invalidateMirrorCache() {
-    cachedMirrorTs = 0;
-  }
-
-  function resolveMirrorState(video) {
+  // Resolves the effective mirror state for a specific tile context
+  function resolveTileMirrorState(tile) {
     const now = performance.now();
-    if (now - cachedMirrorTs < MIRROR_CACHE_TTL_MS && cachedMirrorResult) {
-      return cachedMirrorResult;
+    // Cache auto-mirror computation for 1 second per tile
+    if (now - tile.lastMirrorTs > 1000 || !tile.lastMirrorResult) {
+      tile.lastMirrorResult = detectVideoMirroring(tile.video);
+      tile.lastMirrorTs = now;
     }
 
-    const mirrorInfo = detectVideoMirroring(video);
-    let shouldFlip = false;
-    let modeLabel = config.mirrorMode || "auto";
+    const autoMirrored = tile.lastMirrorResult.isMirrored;
+    let shouldFlip = autoMirrored;
+    let modeLabel = "auto";
 
-    if (config.mirrorMode === "flipped") {
+    if (tile.mirrorMode === "flipped") {
       shouldFlip = true;
       modeLabel = "forced flipped";
-    } else if (config.mirrorMode === "normal") {
+    } else if (tile.mirrorMode === "normal") {
       shouldFlip = false;
       modeLabel = "forced normal";
     } else {
-      shouldFlip = mirrorInfo.isMirrored;
+      shouldFlip = autoMirrored;
       modeLabel = "auto";
     }
 
-    cachedMirrorResult = { shouldFlip, modeLabel, mirrorInfo };
-    cachedMirrorTs = now;
-    return cachedMirrorResult;
+    return { shouldFlip, modeLabel, mirrorInfo: tile.lastMirrorResult };
   }
 
-  // ---- Video geometry (at most once per animation frame) ----
+  // ==========================================
+  // Mathematical CSS object-fit Geometry
+  // ==========================================
 
   function getRenderedVideoGeometry(video) {
     if (!video || !document.body.contains(video)) return null;
@@ -340,7 +324,7 @@
     if (!el || !document.body.contains(el)) return false;
     try {
       const rect = el.getBoundingClientRect();
-      if (rect.width < 80 || rect.height < 60) return false;
+      if (rect.width < 60 || rect.height < 50) return false;
       if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) return false;
       return true;
     } catch {
@@ -348,106 +332,321 @@
     }
   }
 
-  function getCandidateVideos() {
-    const videos = Array.from(document.querySelectorAll("video"));
-    return videos.filter((v) => {
+  // ==========================================
+  // Participant Name Extraction
+  // ==========================================
+
+  function extractParticipantName(video, tileIndex) {
+    if (!video) return `Participant #${tileIndex}`;
+
+    // 1. Direct self-view attributes
+    const selfEl = video.closest("[data-self-name]");
+    if (selfEl) {
+      const name = selfEl.getAttribute("data-self-name");
+      if (name && name.trim()) return `${name.trim()} (You)`;
+      return "You";
+    }
+
+    if (
+      video.closest("[data-is-self-view='true']") ||
+      video.getAttribute("data-is-self-view") === "true" ||
+      video.className.includes("self") ||
+      (video.parentElement && video.parentElement.className.includes("self"))
+    ) {
+      return "You";
+    }
+
+    // 2. Search container hierarchy for participant badges/labels
+    let container = video.parentElement;
+    let depth = 0;
+    while (container && depth < 8 && container !== document.body) {
+      // Common Google Meet name selectors
+      const nameEl = container.querySelector(
+        ".XE8d1b, .poVWvd, [jsname='W297wb'], [jsname='A42nRe'], [data-self-name], [data-participant-id]"
+      );
+      if (nameEl && nameEl.textContent && nameEl.textContent.trim()) {
+        const text = nameEl.textContent.trim();
+        if (text.length > 0 && text.length < 35 && !text.includes(":") && !text.includes("Presenting")) {
+          return text;
+        }
+      }
+
+      // Aria label on tile container
+      const aria = container.getAttribute("aria-label");
+      if (aria && aria.trim() && !aria.includes("Google Meet") && !aria.includes("Call")) {
+        return aria.trim();
+      }
+
+      container = container.parentElement;
+      depth++;
+    }
+
+    return `Participant #${tileIndex}`;
+  }
+
+  // ==========================================
+  // Multi-Tile Lifecycle Management
+  // ==========================================
+
+  function createTileContext(video, index) {
+    tileIdCounter++;
+    const tileId = `tile_${tileIdCounter}`;
+    const participantName = extractParticipantName(video, index);
+    const isSelfView = participantName.includes("You");
+
+    // Per-tile HUD status badge
+    const badge = document.createElement("div");
+    badge.className = "hv-hud-badge hv-scanning";
+    badge.id = `hv-badge-${tileId}`;
+    badge.innerHTML = `
+      <div class="hv-pulse-dot"></div>
+      <div class="hv-hud-text">
+        <span class="hv-badge-participant-name">${escapeHTML(participantName)}</span>
+        <span class="hv-badge-title">PROTECTED</span>
+        <span class="hv-hud-score hv-badge-score">Scanning...</span>
+      </div>
+      <button class="hv-badge-flip-btn" title="Toggle Mirror for this tile">⇄ Auto</button>
+    `;
+
+    document.body.appendChild(badge);
+
+    const tile = {
+      id: tileId,
+      video,
+      participantName,
+      isSelfView,
+      mirrorMode: "auto", // "auto" (default: CSS matrix), "flipped", "normal"
+      lastMirrorResult: null,
+      lastMirrorTs: 0,
+      hudBadge: badge,
+      trackedFaces: new Map(), // faceId -> TrackedFace
+      inFlight: false,
+      lastScanTs: 0,
+      consecutiveNoFace: 0,
+      lastVerdict: "searching",
+      resizeObserver: null,
+      videoObserver: null
+    };
+
+    // Wire up per-tile flip button
+    const flipBtn = badge.querySelector(".hv-badge-flip-btn");
+    if (flipBtn) {
+      updateTileFlipButton(tile);
+      flipBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (tile.mirrorMode === "auto") {
+          tile.mirrorMode = "flipped";
+        } else if (tile.mirrorMode === "flipped") {
+          tile.mirrorMode = "normal";
+        } else {
+          tile.mirrorMode = "auto";
+        }
+        tile.lastMirrorTs = 0; // force recompute
+        updateTileFlipButton(tile);
+        repositionTileFaces(tile);
+      });
+    }
+
+    // Attach ResizeObserver to video and direct parent
+    if (window.ResizeObserver) {
+      tile.resizeObserver = new ResizeObserver(() => {
+        tile.lastMirrorTs = 0; // invalidate mirror cache on resize
+        repositionTileFaces(tile);
+        repositionTileBadge(tile);
+      });
+      tile.resizeObserver.observe(video);
+      if (video.parentElement) {
+        tile.resizeObserver.observe(video.parentElement);
+      }
+    }
+
+    // Observe ONLY the <video> element itself (never parent trees) for style/class changes
+    tile.videoObserver = new MutationObserver(() => {
+      if (writingOwnStyle || observerPaused) return;
+
+      // Watchdog tracking
+      const now = performance.now();
+      if (now - observerCallWindowStart > 1000) {
+        observerCallCount = 0;
+        observerCallWindowStart = now;
+      }
+      observerCallCount++;
+      if (observerCallCount > 30) {
+        observerPaused = true;
+        console.warn("[Deepfake Shield] Observer activity spike (>30/s). Pausing tile observer for 3 seconds.");
+        if (tile.videoObserver) tile.videoObserver.disconnect();
+        setTimeout(() => {
+          observerPaused = false;
+          observerCallCount = 0;
+          if (tile.video && document.body.contains(tile.video)) {
+            tile.videoObserver.observe(tile.video, { attributes: true, attributeFilter: ["style", "class"] });
+          }
+        }, 3000);
+        return;
+      }
+
+      tile.lastMirrorTs = 0;
+      repositionTileFaces(tile);
+      repositionTileBadge(tile);
+    });
+
+    tile.videoObserver.observe(video, { attributes: true, attributeFilter: ["style", "class"] });
+
+    repositionTileBadge(tile);
+    return tile;
+  }
+
+  function updateTileFlipButton(tile) {
+    if (!tile.hudBadge) return;
+    const btn = tile.hudBadge.querySelector(".hv-badge-flip-btn");
+    if (!btn) return;
+
+    const { shouldFlip } = resolveTileMirrorState(tile);
+
+    let text, borderColor;
+    if (tile.mirrorMode === "auto") {
+      text = shouldFlip ? "⇄ Auto (Mirrored)" : "⇄ Auto (Normal)";
+      borderColor = "rgba(255, 255, 255, 0.35)";
+    } else if (tile.mirrorMode === "flipped") {
+      text = "⇄ Force Flipped";
+      borderColor = "rgba(245, 158, 11, 0.85)";
+    } else {
+      text = "⇄ Force Normal";
+      borderColor = "rgba(59, 130, 246, 0.85)";
+    }
+
+    if (btn.textContent !== text) btn.textContent = text;
+    if (btn.style.borderColor !== borderColor) {
+      safeSetStyle(btn, { borderColor });
+    }
+  }
+
+  function destroyTileContext(tile) {
+    if (tile.resizeObserver) {
+      tile.resizeObserver.disconnect();
+      tile.resizeObserver = null;
+    }
+    if (tile.videoObserver) {
+      tile.videoObserver.disconnect();
+      tile.videoObserver = null;
+    }
+    if (tile.hudBadge && tile.hudBadge.parentNode) {
+      tile.hudBadge.parentNode.removeChild(tile.hudBadge);
+    }
+    // Remove all face overlays for this tile
+    for (const [, face] of tile.trackedFaces) {
+      if (face.overlayElement && face.overlayElement.parentNode) {
+        face.overlayElement.parentNode.removeChild(face.overlayElement);
+      }
+    }
+    tile.trackedFaces.clear();
+  }
+
+  function scanAndSyncActiveTiles() {
+    if (!config.enabled || document.hidden) return;
+
+    const allVideos = Array.from(document.querySelectorAll("video"));
+    const activeCandidates = allVideos.filter((v) => {
       if (v.paused || v.ended || v.readyState < 2) return false;
       if (!v.videoWidth || !v.videoHeight || v.videoWidth < 40 || v.videoHeight < 40) return false;
       return isElementVisible(v);
     });
-  }
 
-  function findPrimaryVideo() {
-    const candidates = getCandidateVideos();
-    if (candidates.length === 0) return null;
+    // 1. Remove tiles whose videos no longer exist or are hidden
+    for (const [video, tile] of tileContexts.entries()) {
+      if (!activeCandidates.includes(video) || !document.body.contains(video)) {
+        destroyTileContext(tile);
+        tileContexts.delete(video);
+      }
+    }
 
-    const selfVideo = candidates.find((v) => {
-      return !!(
-        v.closest("[data-self-name]") ||
-        v.closest("[data-is-self-view='true']") ||
-        v.getAttribute("data-is-self-view") === "true" ||
-        v.className.includes("self") ||
-        (v.parentElement && v.parentElement.className.includes("self"))
-      );
+    // 2. Add newly discovered video tiles
+    activeCandidates.forEach((v, idx) => {
+      if (!tileContexts.has(v)) {
+        const tile = createTileContext(v, idx + 1);
+        tileContexts.set(v, tile);
+      } else {
+        // Refresh participant name if it updated
+        const existingTile = tileContexts.get(v);
+        const curName = extractParticipantName(v, idx + 1);
+        if (existingTile.participantName !== curName) {
+          existingTile.participantName = curName;
+          const nameSpan = existingTile.hudBadge.querySelector(".hv-badge-participant-name");
+          if (nameSpan) nameSpan.textContent = curName;
+        }
+      }
     });
-    if (selfVideo) return selfVideo;
 
-    let best = candidates[0];
-    let maxArea = 0;
-    for (const v of candidates) {
-      const r = v.getBoundingClientRect();
-      const area = r.width * r.height;
-      if (area > maxArea) {
-        maxArea = area;
-        best = v;
-      }
-    }
-
-    if (activeVideo && candidates.includes(activeVideo)) {
-      const curRect = activeVideo.getBoundingClientRect();
-      if (curRect.width * curRect.height >= maxArea * 0.70) {
-        return activeVideo;
-      }
-    }
-
-    return best;
-  }
-
-  // ---- Safe style writes (sets guard flag so MutationObserver ignores them) ----
-
-  function safeWriteStyles(el, styles) {
-    writingOwnStyle = true;
-    for (const [k, v] of Object.entries(styles)) {
-      el.style[k] = v;
-    }
-    // Reset on microtask so the mutation record is already queued
-    Promise.resolve().then(() => { writingOwnStyle = false; });
-  }
-
-  // ---- Observers ----
-
-  function attachVideoObservers(video) {
-    if (activeVideoResizeObserver) {
-      activeVideoResizeObserver.disconnect();
-      activeVideoResizeObserver = null;
-    }
-
-    if (window.ResizeObserver && video) {
-      activeVideoResizeObserver = new ResizeObserver(() => {
-        invalidateMirrorCache();
-        scheduleReposition();
-      });
-      activeVideoResizeObserver.observe(video);
-      if (video.parentElement) {
-        activeVideoResizeObserver.observe(video.parentElement);
-      }
+    // 3. Update HUD badge positions
+    for (const [, tile] of tileContexts) {
+      repositionTileBadge(tile);
     }
   }
 
-  // Throttled reposition via rAF — collapses multiple calls per frame into one
-  function scheduleReposition() {
-    if (rafScheduled) return;
-    rafScheduled = true;
-    requestAnimationFrame(() => {
-      rafScheduled = false;
-      repositionTrackedFaces();
-      updateHUDBadgePosition();
+  function repositionTileBadge(tile) {
+    if (!tile.hudBadge || !tile.video || !document.body.contains(tile.video)) return;
+    const rect = tile.video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      safeSetStyle(tile.hudBadge, { display: "none" });
+      return;
+    }
+    safeSetStyle(tile.hudBadge, {
+      display: "flex",
+      left: `${Math.round(rect.left + 14)}px`,
+      top: `${Math.round(rect.top + 14)}px`
     });
   }
 
-  // ---- Reposition tracked faces ----
+  function hideAllOverlays() {
+    for (const [, tile] of tileContexts) {
+      if (tile.hudBadge) safeSetStyle(tile.hudBadge, { display: "none" });
+      for (const [, face] of tile.trackedFaces) {
+        if (face.overlayElement && face.overlayElement.parentNode) {
+          face.overlayElement.parentNode.removeChild(face.overlayElement);
+        }
+      }
+      tile.trackedFaces.clear();
+    }
+  }
 
-  function repositionTrackedFaces() {
-    if (!activeVideo || trackedFaces.size === 0) return;
-    const geom = getRenderedVideoGeometry(activeVideo);
+  // =========================================================================
+  // Multi-Face IoU & Center-Distance Matching (Prevents ID Swapping)
+  // =========================================================================
+
+  function boxIoU(b1, b2) {
+    const xA = Math.max(b1[0], b2[0]);
+    const yA = Math.max(b1[1], b2[1]);
+    const xB = Math.min(b1[0] + b1[2], b2[0] + b2[2]);
+    const yB = Math.min(b1[1] + b1[3], b2[1] + b2[3]);
+    const inter = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+    if (inter <= 0) return 0.0;
+    const area1 = b1[2] * b1[3];
+    const area2 = b2[2] * b2[3];
+    return inter / Math.max(1e-5, area1 + area2 - inter);
+  }
+
+  function centerDistance(b1, b2) {
+    const c1x = b1[0] + b1[2] / 2;
+    const c1y = b1[1] + b1[3] / 2;
+    const c2x = b2[0] + b2[2] / 2;
+    const c2y = b2[1] + b2[3] / 2;
+    const dx = c1x - c2x;
+    const dy = c1y - c2y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  // Repositions all face bounding boxes for a specific tile based on current geometry
+  function repositionTileFaces(tile) {
+    if (!tile.video || tile.trackedFaces.size === 0) return;
+    const geom = getRenderedVideoGeometry(tile.video);
     if (!geom) return;
 
-    const { shouldFlip } = resolveMirrorState(activeVideo);
+    const { shouldFlip } = resolveTileMirrorState(tile);
 
-    for (const [id, face] of trackedFaces.entries()) {
+    for (const [, face] of tile.trackedFaces) {
       if (!face.lastNormBox || !face.overlayElement) continue;
 
-      let [x_norm, y_norm, w_norm, h_norm] = face.lastNormBox;
+      const [x_norm, y_norm, w_norm, h_norm] = face.lastNormBox;
       const screen_x_norm = shouldFlip ? (1.0 - (x_norm + w_norm)) : x_norm;
 
       const targetX = geom.left + geom.offsetX + (screen_x_norm * geom.renderW);
@@ -457,7 +656,7 @@
 
       face.smoothed = { x: targetX, y: targetY, w: targetW, h: targetH };
 
-      safeWriteStyles(face.overlayElement, {
+      safeSetStyle(face.overlayElement, {
         left: `${Math.round(targetX)}px`,
         top: `${Math.round(targetY)}px`,
         width: `${Math.round(targetW)}px`,
@@ -466,278 +665,53 @@
     }
   }
 
-  // ---- Live frame scan ----
+  // =========================================================================
+  // Tile Inference Processing & Per-Face Overlay Rendering
+  // =========================================================================
 
-  function executeLiveScan() {
-    return new Promise((resolve) => {
-      if (!config.enabled || inFlight) {
-        resolve();
-        return;
-      }
-
-      const video = findPrimaryVideo();
-      if (!video) {
-        hideHUD();
-        resolve();
-        return;
-      }
-
-      if (activeVideo !== video) {
-        activeVideo = video;
-        invalidateMirrorCache();
-        attachHUD(video);
-        attachVideoObservers(video);
-        setupVideoAncestorObserver(video);
-      }
-
-      const capture = captureCompactFrame(video);
-      if (!capture) {
-        resolve();
-        return;
-      }
-
-      inFlight = true;
-      const reqStart = performance.now();
-
-      const watchdogId = setTimeout(() => {
-        if (inFlight) {
-          inFlight = false;
-          consecutiveBackendFailures++;
-          if (consecutiveBackendFailures >= 6) {
-            renderOffline();
-          }
-          resolve();
-        }
-      }, 7500);
-
-      const mirrorState = resolveMirrorState(video);
-
-      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-        try {
-          chrome.runtime.sendMessage(
-            {
-              type: "PREDICT_FRAME",
-              payload: {
-                backendUrl: config.backendUrl,
-                image_base64: capture.dataUrl,
-                mirrored: mirrorState.shouldFlip
-              }
-            },
-            (response) => {
-              clearTimeout(watchdogId);
-              inFlight = false;
-
-              if (chrome.runtime.lastError || !response || !response.success) {
-                consecutiveBackendFailures++;
-                if (consecutiveBackendFailures >= 6) {
-                  renderOffline();
-                }
-                resolve();
-                return;
-              }
-
-              consecutiveBackendFailures = 0;
-              const clientLatency = Math.round(performance.now() - reqStart);
-              try {
-                processDetections(response.data, video, capture, clientLatency);
-              } catch (err) {
-                debugLog("Detection process error:", err);
-              }
-              resolve();
-            }
-          );
-          return;
-        } catch (sendErr) {
-          clearTimeout(watchdogId);
-          inFlight = false;
-          consecutiveBackendFailures++;
-          if (consecutiveBackendFailures >= 6) {
-            renderOffline();
-          }
-          resolve();
-          return;
-        }
-      }
-
-      inFlight = false;
-      resolve();
-    });
-  }
-
-  // Sequential Scanning Loop
-  async function startDetectionLoop() {
-    if (loopRunning) return;
-    loopRunning = true;
-
-    while (config.enabled) {
-      if (document.hidden) {
-        await sleep(1000);
-        continue;
-      }
-
-      try {
-        await executeLiveScan();
-      } catch (err) {
-        debugLog("Loop error:", err);
-      }
-
-      const interval = config.scanIntervalMs;
-      await sleep(interval);
-    }
-
-    loopRunning = false;
-  }
-
-  // ---- HUD ----
-
-  function updateFlipButtonLabel() {
-    if (!hudBadge) return;
-    const flipBtn = hudBadge.querySelector("#hv-btn-flip");
-    if (!flipBtn) return;
-
-    const mirrorState = resolveMirrorState(activeVideo);
-
-    let text, title, borderColor;
-    if (config.mirrorMode === "auto") {
-      text = mirrorState.shouldFlip ? "⇄ Auto (Mirrored)" : "⇄ Auto (Normal)";
-      title = "Mirror: Auto. Click to cycle.";
-      borderColor = "rgba(255, 255, 255, 0.35)";
-    } else if (config.mirrorMode === "flipped") {
-      text = "⇄ Force Flipped";
-      title = "Mirror: Forced Flipped. Click to cycle.";
-      borderColor = "rgba(245, 158, 11, 0.85)";
-    } else {
-      text = "⇄ Force Normal";
-      title = "Mirror: Forced Normal. Click to cycle.";
-      borderColor = "rgba(59, 130, 246, 0.85)";
-    }
-
-    // Only write if changed to avoid triggering mutations
-    if (flipBtn.textContent !== text) flipBtn.textContent = text;
-    if (flipBtn.title !== title) flipBtn.title = title;
-    if (flipBtn.style.borderColor !== borderColor) {
-      safeWriteStyles(flipBtn, { borderColor });
-    }
-  }
-
-  function attachHUD(video) {
-    getOrCreateOverlayRoot();
-
-    if (!hudBadge) {
-      hudBadge = document.createElement("div");
-      hudBadge.className = "hv-hud-badge hv-authentic";
-      hudBadge.innerHTML = `
-        <div class="hv-pulse-dot"></div>
-        <div class="hv-hud-text">
-          <span id="hv-badge-title">PROTECTED</span>
-          <span class="hv-hud-score" id="hv-badge-score">Scanning face...</span>
-        </div>
-        <button id="hv-btn-flip" title="Toggle Mirror / Flip (⇄)" class="hv-badge-flip-btn">⇄ Auto</button>
-      `;
-      document.body.appendChild(hudBadge);
-
-      const flipBtn = hudBadge.querySelector("#hv-btn-flip");
-      if (flipBtn) {
-        updateFlipButtonLabel();
-        flipBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (config.mirrorMode === "auto") {
-            config.mirrorMode = "flipped";
-          } else if (config.mirrorMode === "flipped") {
-            config.mirrorMode = "normal";
-          } else {
-            config.mirrorMode = "auto";
-          }
-          if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-            chrome.storage.local.set({ mirrorMode: config.mirrorMode });
-          }
-          invalidateMirrorCache();
-          updateFlipButtonLabel();
-          repositionTrackedFaces();
-        });
-      }
-    }
-
-    const candidates = getCandidateVideos();
-    candidates.forEach((v) => {
-      if (!v.__hv_click_bound) {
-        v.__hv_click_bound = true;
-        v.addEventListener("click", () => {
-          activeVideo = v;
-          consecutiveNoFaceCount = 0;
-          invalidateMirrorCache();
-          attachHUD(v);
-          attachVideoObservers(v);
-          setupVideoAncestorObserver(v);
-          executeLiveScan();
-        });
-      }
-    });
-  }
-
-  function updateHUDBadgePosition() {
-    if (!hudBadge || !activeVideo || !document.body.contains(activeVideo)) return;
-    const rect = activeVideo.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      safeWriteStyles(hudBadge, { display: "none" });
-      return;
-    }
-    safeWriteStyles(hudBadge, {
-      display: "flex",
-      left: `${Math.round(rect.left + 14)}px`,
-      top: `${Math.round(rect.top + 14)}px`
-    });
-  }
-
-  // ---- Process detections from backend ----
-
-  function processDetections(data, video, capture, clientLatency) {
-    if (!hudBadge || !video) return;
+  function processTileDetections(tile, data, capture, clientLatency) {
     const root = getOrCreateOverlayRoot();
+    const video = tile.video;
+    const badge = tile.hudBadge;
+    if (!video || !badge) return;
 
     const { verdict, face_detected, latency_ms, emotion } = data;
-
-    // Read geometry once for this entire function
     const geom = getRenderedVideoGeometry(video);
     if (!geom) return;
 
     const fw = data.frame_width || capture.capturedW || 320;
     const fh = data.frame_height || capture.capturedH || 180;
 
-    // Use cached mirror state
-    const mirrorState = resolveMirrorState(video);
-    const shouldFlip = mirrorState.shouldFlip;
-    const modeLabel = mirrorState.modeLabel;
-    const transformInfo = mirrorState.mirrorInfo;
+    const { shouldFlip, modeLabel } = resolveTileMirrorState(tile);
+    updateTileFlipButton(tile);
 
-    // Update flip button only if needed (no-op if text unchanged)
-    updateFlipButtonLabel();
-
-    // ZERO FACES DETECTED
+    // ZERO FACES DETECTED IN THIS TILE: Purge ghost boxes & set searching state
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
-      consecutiveNoFaceCount++;
-      hudBadge.className = "hv-hud-badge hv-no-face";
-      hudBadge.querySelector("#hv-badge-title").textContent = "NO FACE DETECTED";
-      hudBadge.querySelector("#hv-badge-score").textContent = "Position face in camera";
-      if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = "Scanning for participant face...";
-      }
+      tile.consecutiveNoFace++;
+      tile.lastVerdict = "no_face";
 
-      for (const [id, face] of trackedFaces.entries()) {
+      badge.className = "hv-hud-badge hv-no-face";
+      const titleSpan = badge.querySelector(".hv-badge-title");
+      const scoreSpan = badge.querySelector(".hv-badge-score");
+      if (titleSpan) titleSpan.textContent = "NO FACE";
+      if (scoreSpan) scoreSpan.textContent = "Scanning...";
+
+      // Clean up any stale face overlays for this tile
+      for (const [, face] of tile.trackedFaces) {
         if (face.overlayElement && face.overlayElement.parentNode) {
           face.overlayElement.parentNode.removeChild(face.overlayElement);
         }
       }
-      trackedFaces.clear();
-      updateHUDBadgePosition();
+      tile.trackedFaces.clear();
+      repositionTileBadge(tile);
       return;
     }
 
-    consecutiveNoFaceCount = 0;
-    const detections = data.faces;
-    const matchedTrackIds = new Set();
+    tile.consecutiveNoFace = 0;
+    const rawFaces = data.faces;
 
-    const mappedDetections = detections.map((det, idx) => {
+    // Prepare normalized candidates
+    const candidates = rawFaces.map((det) => {
       const box = det.bounding_box || [0, 0, 0, 0];
 
       let x_norm, y_norm, w_norm, h_norm;
@@ -765,6 +739,7 @@
 
       const rawNormBox = [x_norm, y_norm, w_norm, h_norm];
 
+      // Exact horizontal screen coordinate flip
       const screen_x_norm = shouldFlip ? (1.0 - (x_norm + w_norm)) : x_norm;
 
       const targetX = geom.left + geom.offsetX + (screen_x_norm * geom.renderW);
@@ -774,214 +749,329 @@
       const centerX = targetX + targetW / 2;
       const centerY = targetY + targetH / 2;
 
-      // Rate-limited compact debug log (once per 2s)
-      if (config.debug && idx === 0) {
-        const now = performance.now();
-        if (now - lastDebugLogTs > 2000) {
-          lastDebugLogTs = now;
-          console.log(
-            `%c[DS]%c norm=[${x_norm.toFixed(2)},${y_norm.toFixed(2)},${w_norm.toFixed(2)},${h_norm.toFixed(2)}] flip=${shouldFlip}(${modeLabel}) screen=[${Math.round(targetX)},${Math.round(targetY)},${Math.round(targetW)},${Math.round(targetH)}] geom=${Math.round(geom.renderW)}x${Math.round(geom.renderH)} dpr=${window.devicePixelRatio}`,
-            "color:#0ea5e9;font-weight:bold",
-            "color:inherit"
-          );
-        }
-      }
-
       return {
         det,
-        targetIndex: idx + 1,
         targetX, targetY, targetW, targetH,
         centerX, centerY,
         rawNormBox
       };
     });
 
-    // Batch all DOM writes together (no interleaved reads)
-    mappedDetections.forEach((mDet) => {
-      let bestMatch = null;
-      if (trackedFaces.size >= 1) {
-        bestMatch = Array.from(trackedFaces.values())[0];
-      }
+    // Pairwise matching with existing tracked faces
+    const existingFaces = Array.from(tile.trackedFaces.values());
+    const matchedExistingIds = new Set();
+    const matchedCandidateIndices = new Set();
 
-      if (!bestMatch) {
-        faceIdCounter++;
-        const newId = `track_${faceIdCounter}`;
-
-        const overlayEl = document.createElement("div");
-        overlayEl.className = "hv-face-overlay";
-        overlayEl.style.opacity = "0";
-
-        const tagEl = document.createElement("div");
-        tagEl.className = "hv-face-tag";
-        overlayEl.appendChild(tagEl);
-
-        const crosshairEl = document.createElement("div");
-        crosshairEl.className = "hv-crosshair";
-        overlayEl.appendChild(crosshairEl);
-
-        root.appendChild(overlayEl);
-
-        bestMatch = {
-          id: newId,
-          label: `Face #${mDet.targetIndex}`,
-          overlayElement: overlayEl,
-          tagElement: tagEl,
-          crosshairElement: crosshairEl,
-          smoothed: { x: mDet.targetX, y: mDet.targetY, w: mDet.targetW, h: mDet.targetH }
-        };
-
-        trackedFaces.set(newId, bestMatch);
-      }
-
-      matchedTrackIds.add(bestMatch.id);
-      bestMatch.lastNormBox = mDet.rawNormBox;
-      bestMatch.emotion = mDet.det.emotion || "Focused / Calm 👤";
-      bestMatch.verdict = mDet.det.verdict || "authentic";
-      bestMatch.confidence = mDet.det.confidence || 100.0;
-
-      // Dynamic EMA: snap on big moves, smooth on jitter
-      const prevCenterX = bestMatch.smoothed.x + bestMatch.smoothed.w / 2;
-      const prevCenterY = bestMatch.smoothed.y + bestMatch.smoothed.h / 2;
-      const relDx = Math.abs(mDet.centerX - prevCenterX) / Math.max(1, geom.renderW);
-      const relDy = Math.abs(mDet.centerY - prevCenterY) / Math.max(1, geom.renderH);
-      const relDist = Math.sqrt(relDx * relDx + relDy * relDy);
-
-      const isFastMovement = relDist > 0.10;
-      const alpha = isFastMovement ? 1.0 : 0.70;
-
-      bestMatch.smoothed.x = alpha * mDet.targetX + (1 - alpha) * bestMatch.smoothed.x;
-      bestMatch.smoothed.y = alpha * mDet.targetY + (1 - alpha) * bestMatch.smoothed.y;
-      bestMatch.smoothed.w = alpha * mDet.targetW + (1 - alpha) * bestMatch.smoothed.w;
-      bestMatch.smoothed.h = alpha * mDet.targetH + (1 - alpha) * bestMatch.smoothed.h;
-
-      const el = bestMatch.overlayElement;
-      if (el) {
-        const transition = isFastMovement
-          ? "none"
-          : "left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out, border-color 0.25s, box-shadow 0.25s, opacity 0.25s";
-
-        safeWriteStyles(el, {
-          transition,
-          display: "block",
-          left: `${Math.round(bestMatch.smoothed.x)}px`,
-          top: `${Math.round(bestMatch.smoothed.y)}px`,
-          width: `${Math.round(bestMatch.smoothed.w)}px`,
-          height: `${Math.round(bestMatch.smoothed.h)}px`,
-          opacity: "1"
-        });
-
-        const nameDisplay = bestMatch.label || "Face";
-        const emotionDisplay = bestMatch.emotion;
-
-        if (bestMatch.verdict === "suspicious") {
-          el.className = "hv-face-overlay hv-suspicious-box";
-          if (bestMatch.tagElement) {
-            bestMatch.tagElement.innerHTML = `
-              <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
-              <span class="hv-tag-verdict hv-v-susp">${bestMatch.confidence}% Risk (Deepfake)</span>
-              <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
-            `;
-          }
-        } else {
-          el.className = "hv-face-overlay";
-          if (bestMatch.tagElement) {
-            bestMatch.tagElement.innerHTML = `
-              <span class="hv-tag-identity">${escapeHTML(nameDisplay)}</span>
-              <span class="hv-tag-verdict hv-v-auth">${bestMatch.confidence}% Real</span>
-              <span class="hv-tag-emotion">${escapeHTML(emotionDisplay)}</span>
-            `;
-          }
+    // Compute pairwise similarity matrix
+    const matchPairs = [];
+    existingFaces.forEach((f) => {
+      candidates.forEach((c, cIdx) => {
+        const iou = boxIoU(f.lastNormBox, c.rawNormBox);
+        const dist = centerDistance(f.lastNormBox, c.rawNormBox);
+        // Higher score = better match
+        let score = 0;
+        if (iou > 0.15) {
+          score = 10.0 + iou;
+        } else if (dist < 0.35) {
+          score = 5.0 + (1.0 - dist);
         }
+        if (score > 0) {
+          matchPairs.push({ face: f, cIdx, score });
+        }
+      });
+    });
+
+    // Greedily match best scoring pairs
+    matchPairs.sort((a, b) => b.score - a.score);
+    matchPairs.forEach((pair) => {
+      if (!matchedExistingIds.has(pair.face.id) && !matchedCandidateIndices.has(pair.cIdx)) {
+        matchedExistingIds.add(pair.face.id);
+        matchedCandidateIndices.add(pair.cIdx);
+
+        // Update matched face
+        const c = candidates[pair.cIdx];
+        updateTrackedFace(pair.face, c, geom);
       }
     });
 
-    // Remove unmatched faces
-    for (const [id, face] of trackedFaces.entries()) {
-      if (!matchedTrackIds.has(id)) {
-        if (face.overlayElement && face.overlayElement.parentNode) {
-          face.overlayElement.parentNode.removeChild(face.overlayElement);
+    // Create new TrackedFace for unmatched detections
+    candidates.forEach((c, cIdx) => {
+      if (!matchedCandidateIndices.has(cIdx)) {
+        const newFace = createTrackedFace(tile, c, root, geom);
+        updateTrackedFace(newFace, c, geom);
+      }
+    });
+
+    // Remove stale faces not matched in this cycle
+    for (const [id, face] of tile.trackedFaces) {
+      if (!matchedExistingIds.has(id)) {
+        face.missedCount = (face.missedCount || 0) + 1;
+        if (face.missedCount >= 2) {
+          if (face.overlayElement && face.overlayElement.parentNode) {
+            face.overlayElement.parentNode.removeChild(face.overlayElement);
+          }
+          tile.trackedFaces.delete(id);
         }
-        trackedFaces.delete(id);
+      } else {
+        face.missedCount = 0;
       }
     }
 
-    updateHUDBadgePosition();
+    repositionTileBadge(tile);
 
-    // Floating Top HUD Badge
-    const activeList = Array.from(trackedFaces.values());
-    const totalFaces = activeList.length;
-    const suspiciousFaces = activeList.filter((f) => f.verdict === "suspicious");
-    const primaryEmotion = (activeList.length > 0 && activeList[0].emotion) || emotion || "Focused / Calm 👤";
+    // Update HUD Badge Status for this specific tile
+    const activeFaces = Array.from(tile.trackedFaces.values());
+    const totalFaces = activeFaces.length;
+    const suspiciousFaces = activeFaces.filter((f) => f.verdict === "suspicious");
+    const primaryEmotion = (activeFaces.length > 0 && activeFaces[0].emotion) || emotion || "Focused / Calm 👤";
+
+    const titleSpan = badge.querySelector(".hv-badge-title");
+    const scoreSpan = badge.querySelector(".hv-badge-score");
 
     if (suspiciousFaces.length > 0) {
+      tile.lastVerdict = "suspicious";
       const maxRisk = Math.max(...suspiciousFaces.map((f) => f.confidence));
-      hudBadge.className = "hv-hud-badge hv-suspicious";
-      hudBadge.querySelector("#hv-badge-title").textContent = totalFaces > 1 ? `DEEPFAKE ALERT (${suspiciousFaces.length}/${totalFaces})` : "DEEPFAKE DETECTED";
-      hudBadge.querySelector("#hv-badge-score").textContent = `${maxRisk}% Risk (${latency_ms || clientLatency}ms)`;
-      if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = `⚠️ Deepfake Alert (${maxRisk}% Risk)`;
-      }
+      badge.className = "hv-hud-badge hv-suspicious";
+      if (titleSpan) titleSpan.textContent = totalFaces > 1 ? `DEEPFAKE ALERT (${suspiciousFaces.length}/${totalFaces})` : "DEEPFAKE ALERT";
+      if (scoreSpan) scoreSpan.textContent = `${maxRisk}% Risk (${latency_ms || clientLatency}ms)`;
     } else {
-      const minAuthConf = totalFaces > 0 ? Math.min(...activeList.map((f) => f.confidence)) : 100.0;
-      hudBadge.className = "hv-hud-badge hv-authentic";
-      hudBadge.querySelector("#hv-badge-title").textContent = "PARTICIPANT • VERIFIED";
-      hudBadge.querySelector("#hv-badge-score").textContent = `${minAuthConf}% Authentic • ${primaryEmotion}`;
-      if (dockPill) {
-        dockPill.querySelector("#hv-dock-sub").textContent = `Participant Protected • ${primaryEmotion}`;
-      }
+      tile.lastVerdict = "authentic";
+      const minAuthConf = totalFaces > 0 ? Math.min(...activeFaces.map((f) => f.confidence)) : 99.0;
+      badge.className = "hv-hud-badge hv-authentic";
+      if (titleSpan) titleSpan.textContent = "VERIFIED";
+      if (scoreSpan) scoreSpan.textContent = `${minAuthConf}% Authentic • ${primaryEmotion}`;
     }
 
-    broadcastStatusUpdate(
-      suspiciousFaces.length > 0 ? "suspicious" : "authentic",
-      totalFaces > 0 ? activeList[0].confidence : 100.0,
-      primaryEmotion
+    debugLog(
+      `[${tile.participantName}] faces=${totalFaces} flip=${shouldFlip}(${modeLabel}) verdict=${tile.lastVerdict}`
     );
   }
 
-  // Throttled Status Broadcast to service worker
-  let lastBroadcastStatus = "";
-  let lastBroadcastTime = 0;
+  function createTrackedFace(tile, candidate, root, geom) {
+    const existingIndices = Array.from(tile.trackedFaces.values()).map((f) => f.index);
+    let targetIndex = 1;
+    while (existingIndices.includes(targetIndex)) targetIndex++;
 
-  function broadcastStatusUpdate(verdict, confidence, emotion) {
-    const key = `${verdict}_${Math.round(confidence / 5)}_${emotion}`;
+    const faceId = `${tile.id}_face_${targetIndex}`;
+
+    const overlayEl = document.createElement("div");
+    overlayEl.className = "hv-face-overlay";
+    overlayEl.style.opacity = "0";
+
+    const tagEl = document.createElement("div");
+    tagEl.className = "hv-face-tag";
+    overlayEl.appendChild(tagEl);
+
+    const crosshairEl = document.createElement("div");
+    crosshairEl.className = "hv-crosshair";
+    overlayEl.appendChild(crosshairEl);
+
+    root.appendChild(overlayEl);
+
+    const face = {
+      id: faceId,
+      index: targetIndex,
+      label: `Face #${targetIndex}`,
+      overlayElement: overlayEl,
+      tagElement: tagEl,
+      crosshairElement: crosshairEl,
+      lastNormBox: candidate.rawNormBox,
+      smoothed: { x: candidate.targetX, y: candidate.targetY, w: candidate.targetW, h: candidate.targetH },
+      verdict: "authentic",
+      confidence: 100.0,
+      emotion: "Focused / Calm 👤",
+      missedCount: 0
+    };
+
+    tile.trackedFaces.set(faceId, face);
+    return face;
+  }
+
+  function updateTrackedFace(face, candidate, geom) {
+    face.lastNormBox = candidate.rawNormBox;
+    face.emotion = candidate.det.emotion || "Focused / Calm 👤";
+    face.verdict = candidate.det.verdict || "authentic";
+    face.confidence = candidate.det.confidence || 100.0;
+
+    // Relative displacement of center for dynamic EMA snapping
+    const prevCenterX = face.smoothed.x + face.smoothed.w / 2;
+    const prevCenterY = face.smoothed.y + face.smoothed.h / 2;
+    const relDx = Math.abs(candidate.centerX - prevCenterX) / Math.max(1, geom.renderW);
+    const relDy = Math.abs(candidate.centerY - prevCenterY) / Math.max(1, geom.renderH);
+    const relDist = Math.sqrt(relDx * relDx + relDy * relDy);
+
+    const isFastMovement = relDist > 0.10;
+    const alpha = isFastMovement ? 1.0 : 0.70;
+
+    face.smoothed.x = alpha * candidate.targetX + (1 - alpha) * face.smoothed.x;
+    face.smoothed.y = alpha * candidate.targetY + (1 - alpha) * face.smoothed.y;
+    face.smoothed.w = alpha * candidate.targetW + (1 - alpha) * face.smoothed.w;
+    face.smoothed.h = alpha * candidate.targetH + (1 - alpha) * face.smoothed.h;
+
+    const el = face.overlayElement;
+    if (el) {
+      const transition = isFastMovement
+        ? "none"
+        : "left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out, border-color 0.25s, box-shadow 0.25s, opacity 0.25s";
+
+      safeSetStyle(el, {
+        transition,
+        display: "block",
+        left: `${Math.round(face.smoothed.x)}px`,
+        top: `${Math.round(face.smoothed.y)}px`,
+        width: `${Math.round(face.smoothed.w)}px`,
+        height: `${Math.round(face.smoothed.h)}px`,
+        opacity: "1"
+      });
+
+      const label = face.label;
+      const emotionText = face.emotion;
+
+      if (face.verdict === "suspicious") {
+        el.className = "hv-face-overlay hv-suspicious-box";
+        if (face.tagElement) {
+          face.tagElement.innerHTML = `
+            <span class="hv-tag-identity">${escapeHTML(label)}</span>
+            <span class="hv-tag-verdict hv-v-susp">${face.confidence}% Risk (Deepfake)</span>
+            <span class="hv-tag-emotion">${escapeHTML(emotionText)}</span>
+          `;
+        }
+      } else {
+        el.className = "hv-face-overlay";
+        if (face.tagElement) {
+          face.tagElement.innerHTML = `
+            <span class="hv-tag-identity">${escapeHTML(label)}</span>
+            <span class="hv-tag-verdict hv-v-auth">${face.confidence}% Real</span>
+            <span class="hv-tag-emotion">${escapeHTML(emotionText)}</span>
+          `;
+        }
+      }
+    }
+  }
+
+  // =========================================================================
+  // Fair Priority & Round-Robin Tile Scheduler (Bounded Load, Zero IPC Flood)
+  // =========================================================================
+
+  function selectNextScheduledTile() {
     const now = performance.now();
-    if (key === lastBroadcastStatus && now - lastBroadcastTime < 3000) return;
-    lastBroadcastStatus = key;
-    lastBroadcastTime = now;
+    const candidates = [];
+
+    for (const [, tile] of tileContexts) {
+      // Must not have an in-flight request
+      if (tile.inFlight) continue;
+
+      // Check per-tile minimum scan cooldown
+      if (now - tile.lastScanTs < config.minTileScanIntervalMs) continue;
+
+      const video = tile.video;
+      if (!video || !document.body.contains(video) || video.paused || video.ended || video.readyState < 2) continue;
+
+      const rect = video.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      if (area < 2000) continue; // Ignore microscopic elements
+
+      // Priority scoring:
+      // 1. Larger tiles (spotlight / pinned / active speaker)
+      // 2. Self-view
+      // 3. Tile already holding tracked faces
+      // 4. Age since last scan
+      let score = area / 10000;
+      if (tile.isSelfView) score += 15.0;
+      if (tile.trackedFaces.size > 0) score += 25.0;
+      score += (now - tile.lastScanTs) / 500.0;
+
+      candidates.push({ tile, score });
+    }
+
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0].tile;
+  }
+
+  async function scheduleScanCycle() {
+    if (!config.enabled || document.hidden) return;
+
+    const now = performance.now();
+    if (now - lastGlobalScanTs < config.minGlobalIntervalMs) return;
+
+    const tile = selectNextScheduledTile();
+    if (!tile) return;
+
+    const capture = captureCompactFrame(tile.video);
+    if (!capture) return;
+
+    tile.inFlight = true;
+    lastGlobalScanTs = now;
+    const reqStart = performance.now();
+
+    const watchdogTimer = setTimeout(() => {
+      if (tile.inFlight) {
+        tile.inFlight = false;
+        tile.lastScanTs = performance.now();
+      }
+    }, 6000);
+
+    const { shouldFlip } = resolveTileMirrorState(tile);
 
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({
-        type: "DETECTION_UPDATE",
-        payload: { verdict, confidence, emotion }
-      }).catch(() => {});
-    }
-  }
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: "PREDICT_FRAME",
+            payload: {
+              backendUrl: config.backendUrl,
+              image_base64: capture.dataUrl,
+              mirrored: shouldFlip
+            }
+          },
+          (response) => {
+            clearTimeout(watchdogTimer);
+            tile.inFlight = false;
+            tile.lastScanTs = performance.now();
 
-  function renderOffline() {
-    if (hudBadge) {
-      hudBadge.className = "hv-hud-badge hv-scanning";
-      hudBadge.querySelector("#hv-badge-title").textContent = "SHIELD READY";
-      hudBadge.querySelector("#hv-badge-score").textContent = "Connecting to backend...";
-    }
-    for (const [id, face] of trackedFaces.entries()) {
-      if (face.overlayElement && face.overlayElement.parentNode) {
-        face.overlayElement.parentNode.removeChild(face.overlayElement);
+            if (chrome.runtime.lastError || !response || !response.success) {
+              return;
+            }
+
+            const clientLatency = Math.round(performance.now() - reqStart);
+            try {
+              processTileDetections(tile, response.data, capture, clientLatency);
+            } catch (err) {
+              debugLog("Tile detection processing error:", err);
+            }
+          }
+        );
+      } catch {
+        clearTimeout(watchdogTimer);
+        tile.inFlight = false;
+        tile.lastScanTs = performance.now();
       }
+    } else {
+      clearTimeout(watchdogTimer);
+      tile.inFlight = false;
     }
-    trackedFaces.clear();
   }
 
-  function hideHUD() {
-    if (hudBadge) safeWriteStyles(hudBadge, { display: "none" });
-    for (const [id, face] of trackedFaces.entries()) {
-      if (face.overlayElement && face.overlayElement.parentNode) {
-        face.overlayElement.parentNode.removeChild(face.overlayElement);
+  async function startSchedulerLoop() {
+    if (schedulerRunning) return;
+    schedulerRunning = true;
+
+    while (true) {
+      try {
+        scanAndSyncActiveTiles();
+        await scheduleScanCycle();
+      } catch (err) {
+        debugLog("Scheduler error:", err);
       }
+      await sleep(config.globalScanTickMs);
     }
-    trackedFaces.clear();
   }
 
-  // Draggable Dock Pill
+  // ==========================================
+  // Draggable HUD Dock Pill
+  // ==========================================
+
   function createDockPill() {
     if (dockPill || document.getElementById("hv-dock-pill")) return;
 
@@ -990,7 +1080,7 @@
     dockPill.className = "hv-dock-pill";
 
     dockPill.innerHTML = `
-      <div class="hv-drag-handle" title="Drag to move shield across meeting screen">⋮⋮</div>
+      <div class="hv-drag-handle" title="Drag to move shield">⋮⋮</div>
       <div class="hv-shield-icon">
         <svg viewBox="0 0 24 24">
           <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v6h-2V7zm0 8h2v2h-2v-2z"/>
@@ -998,25 +1088,12 @@
       </div>
       <div class="hv-status-label">
         <span id="hv-dock-text">Deepfake Shield Active</span>
-        <span class="hv-sub" id="hv-dock-sub">Voice, Video &amp; Emotion Shield Active</span>
+        <span class="hv-sub" id="hv-dock-sub">Multi-Participant Video &amp; Emotion Shield</span>
       </div>
       <button class="hv-btn-toggle hv-active" id="hv-btn-dock-toggle">Shield ON</button>
     `;
 
     document.body.appendChild(dockPill);
-
-    dockPill.addEventListener("click", (e) => {
-      if (e.target && (e.target.id === "hv-btn-dock-toggle" || e.target.closest("#hv-btn-dock-toggle"))) return;
-      const v = findPrimaryVideo();
-      if (v) {
-        activeVideo = v;
-        invalidateMirrorCache();
-        attachHUD(v);
-        attachVideoObservers(v);
-        setupVideoAncestorObserver(v);
-        executeLiveScan();
-      }
-    });
 
     dockPill.querySelector("#hv-btn-dock-toggle").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1026,9 +1103,7 @@
       }
       updateDockPill();
       if (!config.enabled) {
-        hideHUD();
-      } else {
-        startDetectionLoop();
+        hideAllOverlays();
       }
     });
 
@@ -1051,7 +1126,7 @@
       startX = e.clientX || (e.touches && e.touches[0].clientX);
       startY = e.clientY || (e.touches && e.touches[0].clientY);
 
-      safeWriteStyles(element, {
+      safeSetStyle(element, {
         bottom: "auto",
         right: "auto",
         left: `${initialLeft}px`,
@@ -1066,18 +1141,15 @@
       const clientX = e.clientX || (e.touches && e.touches[0].clientX);
       const clientY = e.clientY || (e.touches && e.touches[0].clientY);
 
-      const dx = clientX - startX;
-      const dy = clientY - startY;
-
-      let newLeft = initialLeft + dx;
-      let newTop = initialTop + dy;
+      let newLeft = initialLeft + (clientX - startX);
+      let newTop = initialTop + (clientY - startY);
 
       const maxLeft = window.innerWidth - element.offsetWidth - 10;
       const maxTop = window.innerHeight - element.offsetHeight - 10;
       newLeft = Math.max(10, Math.min(newLeft, maxLeft));
       newTop = Math.max(10, Math.min(newTop, maxTop));
 
-      safeWriteStyles(element, {
+      safeSetStyle(element, {
         left: `${newLeft}px`,
         top: `${newTop}px`
       });
@@ -1117,7 +1189,7 @@
       btn.className = "hv-btn-toggle hv-active";
       btn.textContent = "Shield ON";
       label.textContent = "Deepfake Shield Active";
-      sub.textContent = "Voice, Video & Emotion Shield Active";
+      sub.textContent = "Multi-Participant Video & Emotion Shield";
     } else {
       btn.className = "hv-btn-toggle";
       btn.textContent = "Paused";
@@ -1126,75 +1198,22 @@
     }
   }
 
+  // Window resize handler
   window.addEventListener("resize", () => {
-    scheduleReposition();
+    for (const [, tile] of tileContexts) {
+      repositionTileFaces(tile);
+      repositionTileBadge(tile);
+    }
   });
 
-  // ---- Video ancestor observer ----
-  // Only observe style/class changes on the <video> element and its direct ancestors,
-  // NOT on the entire document.body subtree. This avoids re-triggering on our own
-  // overlay style writes.
-  let videoAncestorObserver = null;
-
-  function setupVideoAncestorObserver(video) {
-    if (videoAncestorObserver) {
-      videoAncestorObserver.disconnect();
-      videoAncestorObserver = null;
-    }
-    if (!video) return;
-
-    videoAncestorObserver = new MutationObserver((mutations) => {
-      // Skip if we're the source of the mutation
-      if (writingOwnStyle) return;
-
-      // Runaway guard
-      const now = performance.now();
-      if (now - observerCallWindowStart > 1000) {
-        observerCallCount = 0;
-        observerCallWindowStart = now;
-      }
-      observerCallCount++;
-      if (observerCallCount > 30) {
-        if (!observerStopped) {
-          observerStopped = true;
-          console.warn("[Deepfake Shield] Runaway observer detected (>30 calls/sec). Disconnecting ancestor observer.");
-          if (videoAncestorObserver) videoAncestorObserver.disconnect();
-        }
-        return;
-      }
-
-      invalidateMirrorCache();
-      scheduleReposition();
-    });
-
-    // Walk from video up to body and observe each ancestor's style/class
-    let el = video;
-    while (el && el !== document.documentElement) {
-      videoAncestorObserver.observe(el, { attributes: true, attributeFilter: ["style", "class"] });
-      el = el.parentElement;
-    }
-  }
-
-  // ---- Global childList observer ----
-  // Only watches for new video elements or major DOM restructuring (childList).
-  // Does NOT watch attributes at all — that's the ancestor observer's job.
-  const globalChildListObserver = new MutationObserver(() => {
+  // Global DOM childList observer (Watches ONLY additions/removals of DOM nodes, NEVER style or class)
+  globalChildObserver = new MutationObserver(() => {
     if (document.hidden || !config.enabled) return;
-    if (!activeVideo || !document.body.contains(activeVideo) || activeVideo.videoWidth < 40) {
-      const v = findPrimaryVideo();
-      if (v && v !== activeVideo) {
-        activeVideo = v;
-        invalidateMirrorCache();
-        attachHUD(v);
-        attachVideoObservers(v);
-        setupVideoAncestorObserver(v);
-        executeLiveScan();
-      }
-    }
+    scanAndSyncActiveTiles();
   });
-  globalChildListObserver.observe(document.body, { childList: true, subtree: true });
+  globalChildObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Start
-  startDetectionLoop();
+  // Initialize
+  startSchedulerLoop();
   createDockPill();
 })();
