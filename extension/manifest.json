@@ -46,7 +46,7 @@
         "https://www.youtube.com/*"
       ],
       "all_frames": false,
-      "js": ["content.js"],
+      "js": ["boxMapping.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

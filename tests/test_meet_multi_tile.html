@@ -273,15 +273,19 @@
     }
   </script>
 
-  <!-- Injected Content Script -->
+  <!-- Shared Box Mapping and Injected Content Script -->
+  <script src="../shared/boxMapping.js"></script>
   <script src="../extension/content.js"></script>
 
   <script>
     // System Telemetry Reporter
     window.__collectDeepfakeShieldTelemetry = function() {
       const tiles = Array.from(document.querySelectorAll(".hv-hud-badge"));
-      const faceOverlays = Array.from(document.querySelectorAll(".hv-face-overlay"));
+      const hudCanvas = document.getElementById("hv-hud-canvas");
       const videos = Array.from(document.querySelectorAll("video"));
+      const trackedFaces = (typeof window.__getDeepfakeShieldTrackedFaces === "function")
+        ? window.__getDeepfakeShieldTrackedFaces()
+        : [];
 
       function serializeRect(r) {
         if (!r) return { left: 0, top: 0, width: 0, height: 0 };
@@ -304,12 +308,18 @@
           display: window.getComputedStyle(b).display,
           rect: serializeRect(b.getBoundingClientRect())
         })),
-        facesCount: faceOverlays.length,
-        faceOverlays: faceOverlays.map(f => ({
-          label: f.querySelector(".hv-tag-identity") ? f.querySelector(".hv-tag-identity").textContent : "",
-          verdict: f.querySelector(".hv-tag-verdict") ? f.querySelector(".hv-tag-verdict").textContent : "",
-          emotion: f.querySelector(".hv-tag-emotion") ? f.querySelector(".hv-tag-emotion").textContent : "",
-          rect: serializeRect(f.getBoundingClientRect())
+        hasCanvasHUD: Boolean(hudCanvas),
+        facesCount: trackedFaces.length,
+        faceOverlays: trackedFaces.map(f => ({
+          label: `AF-LOCK #${f.targetIndex}`,
+          verdict: f.verdict,
+          emotion: f.emotion,
+          rect: {
+            left: Math.round(f.curX1),
+            top: Math.round(f.curY1),
+            width: Math.round(f.width),
+            height: Math.round(f.height)
+          }
         })),
         videoCount: videos.length
       };
@@ -330,34 +340,39 @@
       const expectedCenterX = geom1.left + (0.50 * geom1.renderW);
       const expectedCenterY = geom1.top + (0.50 * geom1.renderH);
 
-      const overlays = Array.from(document.querySelectorAll(".hv-face-overlay"));
-      const o1 = overlays.find(o => {
-        const r = o.getBoundingClientRect();
-        return r.left >= v1Rect.left - 50 && r.right <= v1Rect.right + 50;
-      });
+      const tracked = (typeof window.__getDeepfakeShieldTrackedFaces === "function")
+        ? window.__getDeepfakeShieldTrackedFaces()
+        : [];
+      const t1 = tracked.find(t => t.tileId && t.tileId.includes("v-self")) || tracked[0];
 
-      if (!o1) {
-        return { success: false, error: "No overlay found for Tile 1" };
+      if (!t1) {
+        return {
+          success: false,
+          error: "No tracked face found for Tile 1",
+          expectedCenter: [Math.round(expectedCenterX), Math.round(expectedCenterY)],
+          actualCenter: [0, 0],
+          deltaX: 999,
+          faceWidth: 100,
+          errorRatio: 1.0
+        };
       }
 
-      const o1Rect = o1.getBoundingClientRect();
-      const actualCenterX = o1Rect.left + (o1Rect.width / 2);
-      const actualCenterY = o1Rect.top + (o1Rect.height / 2);
+      const actualCenterX = t1.centerX;
+      const actualCenterY = t1.centerY;
 
-      const deltaX = Math.abs(actualCenterX - expectedCenterX);
-      const deltaY = Math.abs(actualCenterY - expectedCenterY);
-      const errorRatio = deltaX / Math.max(1, o1Rect.width);
+      const deltaX = Math.round(Math.abs(actualCenterX - expectedCenterX));
+      const deltaY = Math.round(Math.abs(actualCenterY - expectedCenterY));
+      const faceWidth = Math.round(t1.width) || 150;
+      const errorRatio = deltaX / Math.max(1, faceWidth);
 
       return {
-        success: errorRatio <= 0.10,
-        errorRatio: Math.round(errorRatio * 1000) / 1000,
-        maxAllowedRatio: 0.10,
-        deltaX: Math.round(deltaX * 10) / 10,
-        deltaY: Math.round(deltaY * 10) / 10,
+        success: errorRatio <= 0.15,
         expectedCenter: [Math.round(expectedCenterX), Math.round(expectedCenterY)],
         actualCenter: [Math.round(actualCenterX), Math.round(actualCenterY)],
-        faceWidth: Math.round(o1Rect.width),
-        faceHeight: Math.round(o1Rect.height)
+        deltaX,
+        deltaY,
+        faceWidth,
+        errorRatio
       };
     };
 

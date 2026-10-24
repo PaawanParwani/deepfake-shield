@@ -1,30 +1,34 @@
-// Deepfake Shield — Real-Time Multi-Tile & Multi-Face Google Meet Protection
+// Deepfake Shield — Unified Real-Time Google Meet & Video Call Protection
+// Built with unified shared/boxMapping.js engine & 60 FPS AF-LOCK reticle renderer
 (function () {
   "use strict";
 
-  // 1. NEVER inject into sub-frames or iframes
+  // Prevent multiple injections
   if (window !== window.top) return;
   if (window.__HV_SHIELD_INJECTED__) return;
   window.__HV_SHIELD_INJECTED__ = true;
 
   // Runtime configuration
-  // NOTE: mirrorMode is strictly PER-TILE and defaults to "auto" on every page load.
-  // We intentionally do NOT persist a global mirrorMode override to avoid corrupting remote tiles.
   const config = {
     enabled: true,
     backendUrl: "http://127.0.0.1:8000",
-    minTileScanIntervalMs: 500, // Cooldown between scans of the same tile
-    globalScanTickMs: 120,      // Scheduler tick rate
-    minGlobalIntervalMs: 250,   // Rate limit: max 4 requests/sec across all tiles combined
+    minTileScanIntervalMs: 450, // Per-tile scan cooldown
+    globalScanTickMs: 100,      // Scheduler tick rate
+    minGlobalIntervalMs: 220,   // Rate limit: max 4.5 req/sec across all tiles combined
     debug: false
   };
 
   // Global state
   let overlayRoot = null;
+  let hudCanvas = null;
+  let hudCtx = null;
+  let hudAnimId = null;
   let dockPill = null;
   let schedulerRunning = false;
   let lastGlobalScanTs = 0;
   let tileIdCounter = 0;
+  let lastBackendResponse = null;
+  let lastError = null;
 
   // Active Video Tile Contexts: Map<HTMLVideoElement, TileContext>
   const tileContexts = new Map();
@@ -41,7 +45,7 @@
   function debugLog(...args) {
     if (config.debug) {
       const now = performance.now();
-      if (now - lastDebugLogTs > 2000) {
+      if (now - lastDebugLogTs > 1500) {
         lastDebugLogTs = now;
         console.log("%c[Deepfake Shield]", "color: #0ea5e9; font-weight: bold;", ...args);
       }
@@ -102,7 +106,108 @@
     });
   }
 
-  // Shared Fixed Viewport Overlay Root (Immune to parent transforms & overflow clipping)
+  // Shared Box Mapping Engine: Access unified shared/boxMapping.js with built-in fallback
+  const boxEngine = (typeof window !== "undefined" && window.DeepfakeShieldBoxMapping) ? window.DeepfakeShieldBoxMapping : {
+    computeRenderGeometry: function (elemW, elemH, videoW, videoH, objectFit = "cover") {
+      const vw = videoW || elemW || 640;
+      const vh = videoH || elemH || 480;
+      if (elemW <= 0 || elemH <= 0 || vw <= 0 || vh <= 0) return { renderW: elemW, renderH: elemH, offsetX: 0, offsetY: 0 };
+      const videoRatio = vw / vh;
+      const elemRatio = elemW / elemH;
+      let renderW = elemW;
+      let renderH = elemH;
+      let offsetX = 0;
+      let offsetY = 0;
+      if (objectFit === "contain") {
+        if (elemRatio > videoRatio) {
+          renderH = elemH; renderW = elemH * videoRatio; offsetX = (elemW - renderW) / 2;
+        } else {
+          renderW = elemW; renderH = elemW / videoRatio; offsetY = (elemH - renderH) / 2;
+        }
+      } else {
+        if (elemRatio > videoRatio) {
+          renderW = elemW; renderH = elemW / videoRatio; offsetY = (elemH - renderH) / 2;
+        } else {
+          renderH = elemH; renderW = elemH * videoRatio; offsetX = (elemW - renderW) / 2;
+        }
+      }
+      return { renderW, renderH, offsetX, offsetY };
+    },
+    mapFaceToScreen: function (face, frameW, frameH, videoRect, videoW, videoH, objectFit = "cover", isMirrored = false) {
+      const fw = frameW || 480;
+      const fh = frameH || 360;
+      const elemW = videoRect.width || fw;
+      const elemH = videoRect.height || fh;
+      let normX, normY, normW, normH;
+      if (face.norm_xywh && face.norm_xywh.length >= 4) {
+        [normX, normY, normW, normH] = face.norm_xywh;
+      } else if (face.bounding_box && face.bounding_box.length >= 4) {
+        const [bx1, by1, bx2, by2] = face.bounding_box;
+        normX = bx1 / fw; normY = by1 / fh; normW = (bx2 - bx1) / fw; normH = (by2 - by1) / fh;
+      } else {
+        normX = 0; normY = 0; normW = 0.5; normH = 0.5;
+      }
+      normX = Math.max(0.0, Math.min(1.0, normX));
+      normY = Math.max(0.0, Math.min(1.0, normY));
+      normW = Math.max(0.01, Math.min(1.0 - normX, normW));
+      normH = Math.max(0.01, Math.min(1.0 - normY, normH));
+      const geom = this.computeRenderGeometry(elemW, elemH, videoW, videoH, objectFit);
+      const effNormX = isMirrored ? (1.0 - (normX + normW)) : normX;
+      const localX = geom.offsetX + (effNormX * geom.renderW);
+      const localY = geom.offsetY + (normY * geom.renderH);
+      const boxW = normW * geom.renderW;
+      const boxH = normH * geom.renderH;
+      const screenX = (videoRect.left || 0) + localX;
+      const screenY = (videoRect.top || 0) + localY;
+      return { screenX, screenY, width: boxW, height: boxH, centerX: screenX + boxW / 2, centerY: screenY + boxH / 2, localX, localY, normBox: [normX, normY, normW, normH] };
+    },
+    drawAFLockReticle: function (ctx, bx1, by1, bx2, by2, face, targetIndex = 1, opacity = 1.0, canvasW = window.innerWidth) {
+      const bw = Math.max(20, bx2 - bx1);
+      const bh = Math.max(20, by2 - by1);
+      const cx = bx1 + bw / 2;
+      const cy = by1 + bh / 2;
+      const cornerLen = Math.max(14, Math.min(bw, bh) * 0.22);
+      const isFake = face.verdict === "suspicious" || (face.p_fake || 0) >= 0.65;
+      const strokeColor = isFake ? "#ef4444" : "#10b981";
+      ctx.save();
+      ctx.globalAlpha = Math.max(0.1, Math.min(1.0, opacity));
+      ctx.shadowColor = strokeColor;
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(bx1, by1 + cornerLen); ctx.lineTo(bx1, by1); ctx.lineTo(bx1 + cornerLen, by1);
+      ctx.moveTo(bx2 - cornerLen, by1); ctx.lineTo(bx2, by1); ctx.lineTo(bx2, by1 + cornerLen);
+      ctx.moveTo(bx1, by2 - cornerLen); ctx.lineTo(bx1, by2); ctx.lineTo(bx1 + cornerLen, by2);
+      ctx.moveTo(bx2 - cornerLen, by2); ctx.lineTo(bx2, by2); ctx.lineTo(bx2, by2 - cornerLen);
+      ctx.stroke();
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy);
+      ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
+      ctx.stroke();
+      const badgeText = isFake ? `🔴 AF-ALERT #${targetIndex}: DEEPFAKE ${face.confidence || 90}%` : `🟢 AF-LOCK #${targetIndex}: AUTHENTIC ${face.confidence || 99}%`;
+      const emotionText = face.emotion ? String(face.emotion) : "Focused / Calm 👤";
+      ctx.font = "bold 11px Inter, system-ui, -apple-system, sans-serif";
+      const textW = Math.max(ctx.measureText(badgeText).width, ctx.measureText(emotionText).width);
+      const badgeH = 34;
+      const badgeX = Math.max(8, Math.min(canvasW - textW - 14, cx - textW / 2));
+      const badgeY = Math.max(badgeH + 4, by1 - 8);
+      ctx.fillStyle = "rgba(15, 23, 42, 0.94)";
+      ctx.fillRect(badgeX - 4, badgeY - badgeH + 4, textW + 12, badgeH);
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(badgeX - 4, badgeY - badgeH + 4, textW + 12, badgeH);
+      ctx.fillStyle = strokeColor;
+      ctx.fillText(badgeText, badgeX + 2, badgeY - 14);
+      ctx.font = "600 10px Inter, system-ui, -apple-system, sans-serif";
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fillText(emotionText, badgeX + 2, badgeY);
+      ctx.restore();
+    }
+  };
+
+  // Fixed Viewport Overlay Root and 60 FPS Canvas Reticle Overlay
   function getOrCreateOverlayRoot() {
     if (overlayRoot && document.body.contains(overlayRoot)) return overlayRoot;
     let root = document.getElementById("hv-overlay-root");
@@ -112,10 +217,41 @@
       document.body.appendChild(root);
     }
     overlayRoot = root;
+
+    // Viewport-wide 60 FPS HUD Canvas
+    if (!hudCanvas || !document.body.contains(hudCanvas)) {
+      hudCanvas = document.getElementById("hv-hud-canvas");
+      if (!hudCanvas) {
+        hudCanvas = document.createElement("canvas");
+        hudCanvas.id = "hv-hud-canvas";
+        hudCanvas.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:2147483642;display:block;";
+        overlayRoot.appendChild(hudCanvas);
+      }
+      hudCtx = hudCanvas.getContext("2d");
+      resizeHUDCanvas();
+    }
+
     return overlayRoot;
   }
 
-  // Safe style application (prevents MutationObserver feedback loops)
+  function resizeHUDCanvas() {
+    if (!hudCanvas) return;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (hudCanvas.width !== w || hudCanvas.height !== h) {
+      hudCanvas.width = w;
+      hudCanvas.height = h;
+    }
+  }
+
+  window.addEventListener("resize", () => {
+    resizeHUDCanvas();
+    for (const [, tile] of tileContexts) {
+      repositionTileBadge(tile);
+    }
+  });
+
+  // Safe style application without triggering feedback loops
   function safeSetStyle(el, styles) {
     writingOwnStyle = true;
     for (const [k, v] of Object.entries(styles)) {
@@ -126,15 +262,15 @@
     });
   }
 
-  // Lightweight 320p Frame Capture via Offscreen Canvas (~15KB JPEG)
+  // Lightweight Frame Capture via Offscreen Canvas
   const offscreenCanvas = document.createElement("canvas");
   const offscreenCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
 
   function captureCompactFrame(video) {
-    if (!video || video.paused || video.ended || video.readyState < 2) return null;
+    if (!video || video.paused || video.ended) return null;
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    if (!vw || !vh || vw < 40 || vh < 40) return null;
+    if (!vw || !vh || vw < 20 || vh < 20) return null;
 
     try {
       const maxDim = 320;
@@ -152,7 +288,7 @@
       offscreenCtx.drawImage(video, 0, 0, targetW, targetH);
 
       return {
-        dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.75),
+        dataUrl: offscreenCanvas.toDataURL("image/jpeg", 0.72),
         capturedW: targetW,
         capturedH: targetH
       };
@@ -193,7 +329,6 @@
     ];
   }
 
-  // Inspects the ancestor transform hierarchy of a SPECIFIC video element
   function detectVideoMirroring(video) {
     if (!video) return { isMirrored: false, scaleX: 1, transforms: [] };
 
@@ -225,10 +360,8 @@
     return { isMirrored, scaleX, cumulative, transforms };
   }
 
-  // Resolves the effective mirror state for a specific tile context
   function resolveTileMirrorState(tile) {
     const now = performance.now();
-    // Cache auto-mirror computation for 1 second per tile
     if (now - tile.lastMirrorTs > 1000 || !tile.lastMirrorResult) {
       tile.lastMirrorResult = detectVideoMirroring(tile.video);
       tile.lastMirrorTs = now;
@@ -253,87 +386,7 @@
   }
 
   // ==========================================
-  // Mathematical CSS object-fit Geometry
-  // ==========================================
-
-  function getRenderedVideoGeometry(video) {
-    if (!video || !document.body.contains(video)) return null;
-
-    const rect = video.getBoundingClientRect();
-    const elemW = rect.width;
-    const elemH = rect.height;
-    const vw = video.videoWidth || elemW || 640;
-    const vh = video.videoHeight || elemH || 480;
-
-    if (elemW <= 0 || elemH <= 0 || vw <= 0 || vh <= 0) return null;
-
-    const style = window.getComputedStyle(video);
-    const objectFit = style.objectFit || "cover";
-
-    let renderW = elemW;
-    let renderH = elemH;
-    let offsetX = 0;
-    let offsetY = 0;
-
-    const videoRatio = vw / vh;
-    const elemRatio = elemW / elemH;
-
-    if (objectFit === "contain") {
-      if (elemRatio > videoRatio) {
-        renderH = elemH;
-        renderW = elemH * videoRatio;
-        offsetX = (elemW - renderW) / 2;
-        offsetY = 0;
-      } else {
-        renderW = elemW;
-        renderH = elemW / videoRatio;
-        offsetX = 0;
-        offsetY = (elemH - renderH) / 2;
-      }
-    } else {
-      if (elemRatio > videoRatio) {
-        renderW = elemW;
-        renderH = elemW / videoRatio;
-        offsetX = 0;
-        offsetY = (elemH - renderH) / 2;
-      } else {
-        renderH = elemH;
-        renderW = elemH * videoRatio;
-        offsetX = (elemW - renderW) / 2;
-        offsetY = 0;
-      }
-    }
-
-    return {
-      left: rect.left,
-      top: rect.top,
-      width: elemW,
-      height: elemH,
-      renderW,
-      renderH,
-      offsetX,
-      offsetY,
-      objectFit,
-      vw,
-      vh,
-      dpr: window.devicePixelRatio || 1
-    };
-  }
-
-  function isElementVisible(el) {
-    if (!el || !document.body.contains(el)) return false;
-    try {
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 60 || rect.height < 50) return false;
-      if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // ==========================================
-  // Participant Name Extraction
+  // Participant Name Extraction Pipeline
   // ==========================================
 
   function extractParticipantName(video, tileIndex) {
@@ -342,7 +395,6 @@
     function cleanName(raw, isSelf) {
       if (!raw) return isSelf ? "You" : `Participant #${tileIndex}`;
       let text = String(raw).trim();
-      // Remove any existing redundant "(You)" markers
       text = text.replace(/\s*\(\s*You\s*\)\s*/gi, "").trim();
       if (!text || text.toLowerCase() === "you") {
         return "You";
@@ -350,7 +402,7 @@
       return isSelf ? `${text} (You)` : text;
     }
 
-    // 1. Direct self-view attributes
+    // 1. Check self-view indicator
     const selfEl = video.closest("[data-self-name]");
     if (selfEl) {
       const name = selfEl.getAttribute("data-self-name");
@@ -366,11 +418,10 @@
       return "You";
     }
 
-    // 2. Search container hierarchy for participant badges/labels
+    // 2. Search container hierarchy
     let container = video.parentElement;
     let depth = 0;
     while (container && depth < 8 && container !== document.body) {
-      // Common Google Meet name selectors
       const nameEl = container.querySelector(
         ".XE8d1b, .poVWvd, [jsname='W297wb'], [jsname='A42nRe'], [data-self-name], [data-participant-id]"
       );
@@ -381,7 +432,6 @@
         }
       }
 
-      // Aria label on tile container
       const aria = container.getAttribute("aria-label");
       if (aria && aria.trim() && !aria.includes("Google Meet") && !aria.includes("Call")) {
         return cleanName(aria, false);
@@ -395,6 +445,46 @@
   }
 
   // ==========================================
+  // Video Discovery & Validation Evaluator
+  // ==========================================
+
+  function evaluateVideoCandidate(v) {
+    if (!v) return { accepted: false, reason: "null video element" };
+    if (!document.body.contains(v)) return { accepted: false, reason: "detached from document" };
+    if (v.paused || v.ended) return { accepted: false, reason: "paused or ended stream" };
+
+    const rect = v.getBoundingClientRect();
+    const vw = v.videoWidth || 0;
+    const vh = v.videoHeight || 0;
+
+    if (rect.width < 40 || rect.height < 40) {
+      return { accepted: false, reason: `DOM dimensions too small (${Math.round(rect.width)}x${Math.round(rect.height)})` };
+    }
+
+    if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) {
+      return { accepted: false, reason: "completely outside viewport" };
+    }
+
+    const compStyle = window.getComputedStyle(v);
+    if (compStyle.display === "none" || compStyle.visibility === "hidden" || parseFloat(compStyle.opacity) === 0) {
+      return { accepted: false, reason: "hidden by CSS display/visibility/opacity" };
+    }
+
+    if (vw < 20 || vh < 20) {
+      if (v.srcObject && v.srcObject.getVideoTracks && v.srcObject.getVideoTracks().length > 0) {
+        const track = v.srcObject.getVideoTracks()[0];
+        if (!track.enabled || track.muted || track.readyState !== "live") {
+          return { accepted: false, reason: "MediaStream track is muted/disabled" };
+        }
+      } else {
+        return { accepted: false, reason: `zero video resolution (${vw}x${vh})` };
+      }
+    }
+
+    return { accepted: true, reason: `valid (${vw}x${vh}, DOM ${Math.round(rect.width)}x${Math.round(rect.height)})` };
+  }
+
+  // ==========================================
   // Multi-Tile Lifecycle Management
   // ==========================================
 
@@ -404,7 +494,8 @@
     const participantName = extractParticipantName(video, index);
     const isSelfView = participantName.includes("You");
 
-    // Per-tile HUD status badge
+    getOrCreateOverlayRoot();
+
     const badge = document.createElement("div");
     badge.className = "hv-hud-badge hv-scanning";
     badge.id = `hv-badge-${tileId}`;
@@ -425,7 +516,8 @@
       video,
       participantName,
       isSelfView,
-      mirrorMode: "auto", // "auto" (default: CSS matrix), "flipped", "normal"
+      mirrorMode: "auto",
+      currentFlipped: false,
       lastMirrorResult: null,
       lastMirrorTs: 0,
       hudBadge: badge,
@@ -438,7 +530,6 @@
       videoObserver: null
     };
 
-    // Wire up per-tile flip button
     const flipBtn = badge.querySelector(".hv-badge-flip-btn");
     if (flipBtn) {
       updateTileFlipButton(tile);
@@ -451,20 +542,19 @@
         } else {
           tile.mirrorMode = "auto";
         }
-        tile.lastMirrorTs = 0; // force recompute
-        updateTileFlipButton(tile);
-        repositionTileFaces(tile);
-      });
-    }
-
-    // Attach ResizeObserver to video and direct parent
-    if (window.ResizeObserver) {
-      tile.resizeObserver = new ResizeObserver(() => {
-        tile.lastMirrorTs = 0; // invalidate mirror cache on resize
+        tile.lastMirrorTs = 0;
         const { shouldFlip } = resolveTileMirrorState(tile);
         tile.currentFlipped = shouldFlip;
         updateTileFlipButton(tile);
-        repositionTileFaces(tile);
+      });
+    }
+
+    if (window.ResizeObserver) {
+      tile.resizeObserver = new ResizeObserver(() => {
+        tile.lastMirrorTs = 0;
+        const { shouldFlip } = resolveTileMirrorState(tile);
+        tile.currentFlipped = shouldFlip;
+        updateTileFlipButton(tile);
         repositionTileBadge(tile);
       });
       tile.resizeObserver.observe(video);
@@ -473,11 +563,9 @@
       }
     }
 
-    // Observe ONLY the <video> element itself (never parent trees) for style/class changes
     tile.videoObserver = new MutationObserver(() => {
       if (writingOwnStyle || observerPaused) return;
 
-      // Watchdog tracking
       const now = performance.now();
       if (now - observerCallWindowStart > 1000) {
         observerCallCount = 0;
@@ -502,7 +590,6 @@
       const { shouldFlip } = resolveTileMirrorState(tile);
       tile.currentFlipped = shouldFlip;
       updateTileFlipButton(tile);
-      repositionTileFaces(tile);
       repositionTileBadge(tile);
     });
 
@@ -549,12 +636,6 @@
     if (tile.hudBadge && tile.hudBadge.parentNode) {
       tile.hudBadge.parentNode.removeChild(tile.hudBadge);
     }
-    // Remove all face overlays for this tile
-    for (const [, face] of tile.trackedFaces) {
-      if (face.overlayElement && face.overlayElement.parentNode) {
-        face.overlayElement.parentNode.removeChild(face.overlayElement);
-      }
-    }
     tile.trackedFaces.clear();
   }
 
@@ -562,13 +643,25 @@
     if (!config.enabled || document.hidden) return;
 
     const allVideos = Array.from(document.querySelectorAll("video"));
-    const activeCandidates = allVideos.filter((v) => {
-      if (v.paused || v.ended || v.readyState < 2) return false;
-      if (!v.videoWidth || !v.videoHeight || v.videoWidth < 40 || v.videoHeight < 40) return false;
-      return isElementVisible(v);
-    });
+    const activeCandidates = allVideos.filter((v) => evaluateVideoCandidate(v).accepted);
 
-    // 1. Remove tiles whose videos no longer exist or are hidden
+    // Fallback: If no candidate passed strict check, pick largest visible video
+    if (activeCandidates.length === 0 && allVideos.length > 0) {
+      const visible = allVideos.filter((v) => {
+        const r = v.getBoundingClientRect();
+        return r.width >= 40 && r.height >= 40 && r.bottom > 0 && r.right > 0;
+      });
+      if (visible.length > 0) {
+        visible.sort((a, b) => {
+          const rA = a.getBoundingClientRect();
+          const rB = b.getBoundingClientRect();
+          return (rB.width * rB.height) - (rA.width * rA.height);
+        });
+        activeCandidates.push(visible[0]);
+      }
+    }
+
+    // 1. Remove tiles whose videos no longer exist or are inactive
     for (const [video, tile] of tileContexts.entries()) {
       if (!activeCandidates.includes(video) || !document.body.contains(video)) {
         destroyTileContext(tile);
@@ -582,7 +675,6 @@
         const tile = createTileContext(v, idx + 1);
         tileContexts.set(v, tile);
       } else {
-        // Refresh participant name if it updated
         const existingTile = tileContexts.get(v);
         const curName = extractParticipantName(v, idx + 1);
         if (existingTile.participantName !== curName) {
@@ -593,7 +685,7 @@
       }
     });
 
-    // 3. Update HUD badge positions & check for mirror state changes (re-checked every 1s)
+    // 3. Update HUD badge positions & check mirror state (re-checked every 1s)
     const now = performance.now();
     for (const [, tile] of tileContexts) {
       repositionTileBadge(tile);
@@ -602,7 +694,6 @@
         if (tile.currentFlipped !== undefined && tile.currentFlipped !== shouldFlip) {
           tile.currentFlipped = shouldFlip;
           updateTileFlipButton(tile);
-          repositionTileFaces(tile);
         } else {
           tile.currentFlipped = shouldFlip;
         }
@@ -627,17 +718,15 @@
   function hideAllOverlays() {
     for (const [, tile] of tileContexts) {
       if (tile.hudBadge) safeSetStyle(tile.hudBadge, { display: "none" });
-      for (const [, face] of tile.trackedFaces) {
-        if (face.overlayElement && face.overlayElement.parentNode) {
-          face.overlayElement.parentNode.removeChild(face.overlayElement);
-        }
-      }
       tile.trackedFaces.clear();
+    }
+    if (hudCtx && hudCanvas) {
+      hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
     }
   }
 
   // =========================================================================
-  // Multi-Face IoU & Center-Distance Matching (Prevents ID Swapping)
+  // Multi-Face IoU & Center-Distance Matching
   // =========================================================================
 
   function boxIoU(b1, b2) {
@@ -662,49 +751,19 @@
     return Math.sqrt(dx * dx + dy * dy);
   }
 
-  // Repositions all face bounding boxes for a specific tile based on current geometry
-  function repositionTileFaces(tile) {
-    if (!tile.video || tile.trackedFaces.size === 0) return;
-    const geom = getRenderedVideoGeometry(tile.video);
-    if (!geom) return;
-
-    const { shouldFlip } = resolveTileMirrorState(tile);
-
-    for (const [, face] of tile.trackedFaces) {
-      if (!face.lastNormBox || !face.overlayElement) continue;
-
-      const [x_norm, y_norm, w_norm, h_norm] = face.lastNormBox;
-      const screen_x_norm = shouldFlip ? (1.0 - (x_norm + w_norm)) : x_norm;
-
-      const targetX = geom.left + geom.offsetX + (screen_x_norm * geom.renderW);
-      const targetY = geom.top + geom.offsetY + (y_norm * geom.renderH);
-      const targetW = w_norm * geom.renderW;
-      const targetH = h_norm * geom.renderH;
-
-      face.smoothed = { x: targetX, y: targetY, w: targetW, h: targetH };
-
-      safeSetStyle(face.overlayElement, {
-        left: `${Math.round(targetX)}px`,
-        top: `${Math.round(targetY)}px`,
-        width: `${Math.round(targetW)}px`,
-        height: `${Math.round(targetH)}px`
-      });
-    }
-  }
-
   // =========================================================================
-  // Tile Inference Processing & Per-Face Overlay Rendering
+  // Tile Inference Processing & Per-Face Target Updating
   // =========================================================================
 
   function processTileDetections(tile, data, capture, clientLatency) {
-    const root = getOrCreateOverlayRoot();
+    lastBackendResponse = data;
     const video = tile.video;
     const badge = tile.hudBadge;
     if (!video || !badge) return;
 
     const { verdict, face_detected, latency_ms, emotion } = data;
-    const geom = getRenderedVideoGeometry(video);
-    if (!geom) return;
+    const rect = video.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
 
     const fw = data.frame_width || capture.capturedW || 320;
     const fh = data.frame_height || capture.capturedH || 180;
@@ -712,7 +771,10 @@
     const { shouldFlip, modeLabel } = resolveTileMirrorState(tile);
     updateTileFlipButton(tile);
 
-    // ZERO FACES DETECTED IN THIS TILE: Purge ghost boxes & set searching state
+    const style = window.getComputedStyle(video);
+    const objectFit = style.objectFit || "cover";
+
+    // ZERO FACES DETECTED IN THIS TILE: Clear targets & set searching state
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
       tile.consecutiveNoFace++;
       tile.lastVerdict = "no_face";
@@ -721,14 +783,8 @@
       const titleSpan = badge.querySelector(".hv-badge-title");
       const scoreSpan = badge.querySelector(".hv-badge-score");
       if (titleSpan) titleSpan.textContent = "NO FACE";
-      if (scoreSpan) scoreSpan.textContent = "Scanning...";
+      if (scoreSpan) scoreSpan.textContent = "Position face in camera";
 
-      // Clean up any stale face overlays for this tile
-      for (const [, face] of tile.trackedFaces) {
-        if (face.overlayElement && face.overlayElement.parentNode) {
-          face.overlayElement.parentNode.removeChild(face.overlayElement);
-        }
-      }
       tile.trackedFaces.clear();
       repositionTileBadge(tile);
       return;
@@ -737,50 +793,30 @@
     tile.consecutiveNoFace = 0;
     const rawFaces = data.faces;
 
-    // Prepare normalized candidates
+    // Use unified shared box-mapping engine to map each detected face to screen
     const candidates = rawFaces.map((det) => {
-      const box = det.bounding_box || [0, 0, 0, 0];
-
-      let x_norm, y_norm, w_norm, h_norm;
-      if (det.norm_xywh && det.norm_xywh.length >= 4) {
-        x_norm = det.norm_xywh[0];
-        y_norm = det.norm_xywh[1];
-        w_norm = det.norm_xywh[2];
-        h_norm = det.norm_xywh[3];
-      } else if (det.norm_bbox && det.norm_bbox.length >= 4) {
-        x_norm = det.norm_bbox[0];
-        y_norm = det.norm_bbox[1];
-        w_norm = det.norm_bbox[2] - det.norm_bbox[0];
-        h_norm = det.norm_bbox[3] - det.norm_bbox[1];
-      } else {
-        x_norm = (box[0] || 0) / fw;
-        y_norm = (box[1] || 0) / fh;
-        w_norm = ((box[2] || 0) - (box[0] || 0)) / fw;
-        h_norm = ((box[3] || 0) - (box[1] || 0)) / fh;
-      }
-
-      x_norm = Math.max(0.0, Math.min(1.0, x_norm));
-      y_norm = Math.max(0.0, Math.min(1.0, y_norm));
-      w_norm = Math.max(0.0, Math.min(1.0 - x_norm, w_norm));
-      h_norm = Math.max(0.0, Math.min(1.0 - y_norm, h_norm));
-
-      const rawNormBox = [x_norm, y_norm, w_norm, h_norm];
-
-      // Exact horizontal screen coordinate flip
-      const screen_x_norm = shouldFlip ? (1.0 - (x_norm + w_norm)) : x_norm;
-
-      const targetX = geom.left + geom.offsetX + (screen_x_norm * geom.renderW);
-      const targetY = geom.top + geom.offsetY + (y_norm * geom.renderH);
-      const targetW = w_norm * geom.renderW;
-      const targetH = h_norm * geom.renderH;
-      const centerX = targetX + targetW / 2;
-      const centerY = targetY + targetH / 2;
+      const mapped = boxEngine.mapFaceToScreen(
+        det,
+        fw,
+        fh,
+        rect,
+        video.videoWidth || rect.width,
+        video.videoHeight || rect.height,
+        objectFit,
+        shouldFlip
+      );
 
       return {
         det,
-        targetX, targetY, targetW, targetH,
-        centerX, centerY,
-        rawNormBox
+        tgtX1: mapped.screenX,
+        tgtY1: mapped.screenY,
+        tgtX2: mapped.screenX + mapped.width,
+        tgtY2: mapped.screenY + mapped.height,
+        width: mapped.width,
+        height: mapped.height,
+        centerX: mapped.centerX,
+        centerY: mapped.centerY,
+        rawNormBox: mapped.normBox
       };
     });
 
@@ -789,13 +825,11 @@
     const matchedExistingIds = new Set();
     const matchedCandidateIndices = new Set();
 
-    // Compute pairwise similarity matrix
     const matchPairs = [];
     existingFaces.forEach((f) => {
       candidates.forEach((c, cIdx) => {
         const iou = boxIoU(f.lastNormBox, c.rawNormBox);
         const dist = centerDistance(f.lastNormBox, c.rawNormBox);
-        // Higher score = better match
         let score = 0;
         if (iou > 0.15) {
           score = 10.0 + iou;
@@ -808,35 +842,28 @@
       });
     });
 
-    // Greedily match best scoring pairs
     matchPairs.sort((a, b) => b.score - a.score);
     matchPairs.forEach((pair) => {
       if (!matchedExistingIds.has(pair.face.id) && !matchedCandidateIndices.has(pair.cIdx)) {
         matchedExistingIds.add(pair.face.id);
         matchedCandidateIndices.add(pair.cIdx);
 
-        // Update matched face
         const c = candidates[pair.cIdx];
-        updateTrackedFace(pair.face, c, geom);
+        updateTrackedFace(pair.face, c);
       }
     });
 
-    // Create new TrackedFace for unmatched detections
     candidates.forEach((c, cIdx) => {
       if (!matchedCandidateIndices.has(cIdx)) {
-        const newFace = createTrackedFace(tile, c, root, geom);
-        updateTrackedFace(newFace, c, geom);
+        const newFace = createTrackedFace(tile, c);
+        updateTrackedFace(newFace, c);
       }
     });
 
-    // Remove stale faces not matched in this cycle
     for (const [id, face] of tile.trackedFaces) {
       if (!matchedExistingIds.has(id)) {
         face.missedCount = (face.missedCount || 0) + 1;
         if (face.missedCount >= 2) {
-          if (face.overlayElement && face.overlayElement.parentNode) {
-            face.overlayElement.parentNode.removeChild(face.overlayElement);
-          }
           tile.trackedFaces.delete(id);
         }
       } else {
@@ -846,7 +873,7 @@
 
     repositionTileBadge(tile);
 
-    // Update HUD Badge Status for this specific tile
+    // Update Tile Badge
     const activeFaces = Array.from(tile.trackedFaces.values());
     const totalFaces = activeFaces.length;
     const suspiciousFaces = activeFaces.filter((f) => f.verdict === "suspicious");
@@ -874,36 +901,27 @@
     );
   }
 
-  function createTrackedFace(tile, candidate, root, geom) {
+  function createTrackedFace(tile, candidate) {
     const existingIndices = Array.from(tile.trackedFaces.values()).map((f) => f.index);
     let targetIndex = 1;
     while (existingIndices.includes(targetIndex)) targetIndex++;
 
     const faceId = `${tile.id}_face_${targetIndex}`;
 
-    const overlayEl = document.createElement("div");
-    overlayEl.className = "hv-face-overlay";
-    overlayEl.style.opacity = "0";
-
-    const tagEl = document.createElement("div");
-    tagEl.className = "hv-face-tag";
-    overlayEl.appendChild(tagEl);
-
-    const crosshairEl = document.createElement("div");
-    crosshairEl.className = "hv-crosshair";
-    overlayEl.appendChild(crosshairEl);
-
-    root.appendChild(overlayEl);
-
     const face = {
       id: faceId,
       index: targetIndex,
       label: `Face #${targetIndex}`,
-      overlayElement: overlayEl,
-      tagElement: tagEl,
-      crosshairElement: crosshairEl,
+      curX1: candidate.tgtX1,
+      curY1: candidate.tgtY1,
+      curX2: candidate.tgtX2,
+      curY2: candidate.tgtY2,
+      tgtX1: candidate.tgtX1,
+      tgtY1: candidate.tgtY1,
+      tgtX2: candidate.tgtX2,
+      tgtY2: candidate.tgtY2,
+      opacity: 0.1,
       lastNormBox: candidate.rawNormBox,
-      smoothed: { x: candidate.targetX, y: candidate.targetY, w: candidate.targetW, h: candidate.targetH },
       verdict: "authentic",
       confidence: 100.0,
       emotion: "Focused / Calm 👤",
@@ -914,70 +932,79 @@
     return face;
   }
 
-  function updateTrackedFace(face, candidate, geom) {
+  function updateTrackedFace(face, candidate) {
     face.lastNormBox = candidate.rawNormBox;
     face.emotion = candidate.det.emotion || "Focused / Calm 👤";
     face.verdict = candidate.det.verdict || "authentic";
     face.confidence = candidate.det.confidence || 100.0;
+    face.tgtX1 = candidate.tgtX1;
+    face.tgtY1 = candidate.tgtY1;
+    face.tgtX2 = candidate.tgtX2;
+    face.tgtY2 = candidate.tgtY2;
 
-    // Relative displacement of center for dynamic EMA snapping
-    const prevCenterX = face.smoothed.x + face.smoothed.w / 2;
-    const prevCenterY = face.smoothed.y + face.smoothed.h / 2;
-    const relDx = Math.abs(candidate.centerX - prevCenterX) / Math.max(1, geom.renderW);
-    const relDy = Math.abs(candidate.centerY - prevCenterY) / Math.max(1, geom.renderH);
-    const relDist = Math.sqrt(relDx * relDx + relDy * relDy);
-
-    const isFastMovement = relDist > 0.10;
-    const alpha = isFastMovement ? 1.0 : 0.70;
-
-    face.smoothed.x = alpha * candidate.targetX + (1 - alpha) * face.smoothed.x;
-    face.smoothed.y = alpha * candidate.targetY + (1 - alpha) * face.smoothed.y;
-    face.smoothed.w = alpha * candidate.targetW + (1 - alpha) * face.smoothed.w;
-    face.smoothed.h = alpha * candidate.targetH + (1 - alpha) * face.smoothed.h;
-
-    const el = face.overlayElement;
-    if (el) {
-      const transition = isFastMovement
-        ? "none"
-        : "left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out, border-color 0.25s, box-shadow 0.25s, opacity 0.25s";
-
-      safeSetStyle(el, {
-        transition,
-        display: "block",
-        left: `${Math.round(face.smoothed.x)}px`,
-        top: `${Math.round(face.smoothed.y)}px`,
-        width: `${Math.round(face.smoothed.w)}px`,
-        height: `${Math.round(face.smoothed.h)}px`,
-        opacity: "1"
-      });
-
-      const label = face.label;
-      const emotionText = face.emotion;
-
-      if (face.verdict === "suspicious") {
-        el.className = "hv-face-overlay hv-suspicious-box";
-        if (face.tagElement) {
-          face.tagElement.innerHTML = `
-            <span class="hv-tag-identity">${escapeHTML(label)}</span>
-            <span class="hv-tag-verdict hv-v-susp">${face.confidence}% Risk (Deepfake)</span>
-            <span class="hv-tag-emotion">${escapeHTML(emotionText)}</span>
-          `;
-        }
-      } else {
-        el.className = "hv-face-overlay";
-        if (face.tagElement) {
-          face.tagElement.innerHTML = `
-            <span class="hv-tag-identity">${escapeHTML(label)}</span>
-            <span class="hv-tag-verdict hv-v-auth">${face.confidence}% Real</span>
-            <span class="hv-tag-emotion">${escapeHTML(emotionText)}</span>
-          `;
-        }
-      }
+    // Center displacement check: Snap immediately on big movement (>15% width), smooth on jitter
+    const curWidth = Math.max(1, face.curX2 - face.curX1);
+    const curCx = (face.curX1 + face.curX2) / 2;
+    const tgtCx = (face.tgtX1 + face.tgtX2) / 2;
+    if (Math.abs(tgtCx - curCx) / curWidth > 0.15) {
+      face.curX1 = face.tgtX1;
+      face.curY1 = face.tgtY1;
+      face.curX2 = face.tgtX2;
+      face.curY2 = face.tgtY2;
     }
   }
 
   // =========================================================================
-  // Fair Priority & Round-Robin Tile Scheduler (Bounded Load, Zero IPC Flood)
+  // 60 FPS Decoupled Smooth AF-LOCK Reticle Renderer (Zero Layout Thrashing)
+  // =========================================================================
+
+  function render60FPSHUD() {
+    if (!config.enabled) {
+      if (hudCtx && hudCanvas) {
+        hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+      }
+      hudAnimId = requestAnimationFrame(render60FPSHUD);
+      return;
+    }
+
+    if (hudCanvas && hudCtx) {
+      resizeHUDCanvas();
+      hudCtx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
+
+      const LERP = 0.42;
+
+      for (const [, tile] of tileContexts) {
+        if (!tile.video || !document.body.contains(tile.video)) continue;
+
+        for (const [, f] of tile.trackedFaces) {
+          // Smooth glide toward target box
+          f.curX1 += (f.tgtX1 - f.curX1) * LERP;
+          f.curY1 += (f.tgtY1 - f.curY1) * LERP;
+          f.curX2 += (f.tgtX2 - f.curX2) * LERP;
+          f.curY2 += (f.tgtY2 - f.curY2) * LERP;
+          f.opacity = Math.min(1.0, f.opacity + 0.15);
+
+          // Draw reference AF-LOCK corner brackets and crosshair using shared module
+          boxEngine.drawAFLockReticle(
+            hudCtx,
+            f.curX1,
+            f.curY1,
+            f.curX2,
+            f.curY2,
+            f,
+            f.index,
+            f.opacity,
+            hudCanvas.width
+          );
+        }
+      }
+    }
+
+    hudAnimId = requestAnimationFrame(render60FPSHUD);
+  }
+
+  // =========================================================================
+  // Priority & Round-Robin Tile Scheduler (Bounded Load, Zero IPC Flood)
   // =========================================================================
 
   function selectNextScheduledTile() {
@@ -985,24 +1012,16 @@
     const candidates = [];
 
     for (const [, tile] of tileContexts) {
-      // Must not have an in-flight request
       if (tile.inFlight) continue;
-
-      // Check per-tile minimum scan cooldown
       if (now - tile.lastScanTs < config.minTileScanIntervalMs) continue;
 
       const video = tile.video;
-      if (!video || !document.body.contains(video) || video.paused || video.ended || video.readyState < 2) continue;
+      if (!video || !document.body.contains(video) || video.paused || video.ended) continue;
 
       const rect = video.getBoundingClientRect();
       const area = rect.width * rect.height;
-      if (area < 2000) continue; // Ignore microscopic elements
+      if (area < 2000) continue;
 
-      // Priority scoring:
-      // 1. Larger tiles (spotlight / pinned / active speaker)
-      // 2. Self-view
-      // 3. Tile already holding tracked faces
-      // 4. Age since last scan
       let score = area / 10000;
       if (tile.isSelfView) score += 15.0;
       if (tile.trackedFaces.size > 0) score += 25.0;
@@ -1025,9 +1044,6 @@
     const tile = selectNextScheduledTile();
     if (!tile) return;
 
-    const capture = captureCompactFrame(tile.video);
-    if (!capture) return;
-
     tile.inFlight = true;
     lastGlobalScanTs = now;
     const reqStart = performance.now();
@@ -1039,10 +1055,17 @@
       }
     }, 6000);
 
-    const { shouldFlip } = resolveTileMirrorState(tile);
+    try {
+      const capture = captureCompactFrame(tile.video);
+      if (!capture) {
+        tile.inFlight = false;
+        clearTimeout(watchdogTimer);
+        return;
+      }
 
-    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-      try {
+      const { shouldFlip } = resolveTileMirrorState(tile);
+
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
         chrome.runtime.sendMessage(
           {
             type: "PREDICT_FRAME",
@@ -1058,6 +1081,7 @@
             tile.lastScanTs = performance.now();
 
             if (chrome.runtime.lastError || !response || !response.success) {
+              lastError = chrome.runtime.lastError ? chrome.runtime.lastError.message : (response ? response.error : "Unknown backend response");
               return;
             }
 
@@ -1065,16 +1089,17 @@
             try {
               processTileDetections(tile, response.data, capture, clientLatency);
             } catch (err) {
+              lastError = err.message;
               debugLog("Tile detection processing error:", err);
             }
           }
         );
-      } catch {
+      } else {
         clearTimeout(watchdogTimer);
         tile.inFlight = false;
-        tile.lastScanTs = performance.now();
       }
-    } else {
+    } catch (err) {
+      lastError = err.message;
       clearTimeout(watchdogTimer);
       tile.inFlight = false;
     }
@@ -1225,22 +1250,115 @@
     }
   }
 
-  // Window resize handler
-  window.addEventListener("resize", () => {
-    for (const [, tile] of tileContexts) {
-      repositionTileFaces(tile);
-      repositionTileBadge(tile);
-    }
-  });
-
-  // Global DOM childList observer (Watches ONLY additions/removals of DOM nodes, NEVER style or class)
+  // Global DOM childList observer (Watches ONLY additions/removals of DOM nodes, NEVER attributes)
   globalChildObserver = new MutationObserver(() => {
     if (document.hidden || !config.enabled) return;
     scanAndSyncActiveTiles();
   });
   globalChildObserver.observe(document.body, { childList: true, subtree: true });
 
+  // Programmatic telemetry and inspection helper
+  window.__getDeepfakeShieldTrackedFaces = function () {
+    const list = [];
+    for (const [, tile] of tileContexts) {
+      for (const [, trk] of tile.trackedFaces) {
+        list.push({
+          tileId: tile.id,
+          participantName: tile.participantName,
+          id: trk.id,
+          targetIndex: trk.index || 1,
+          curX1: trk.curX1,
+          curY1: trk.curY1,
+          curX2: trk.curX2,
+          curY2: trk.curY2,
+          centerX: (trk.curX1 + trk.curX2) / 2,
+          centerY: (trk.curY1 + trk.curY2) / 2,
+          width: trk.curX2 - trk.curX1,
+          height: trk.curY2 - trk.curY1,
+          verdict: trk.face ? trk.face.verdict : "uncertain",
+          confidence: trk.face ? trk.face.confidence : 99,
+          emotion: trk.face ? trk.face.emotion : "Focused / Calm 👤",
+          opacity: trk.opacity
+        });
+      }
+    }
+    return list;
+  };
+
+  // Developer & Diagnostic Self-Test Console Command
+  window.deepfakeShieldSelfTest = async function () {
+    console.group("%c[Deepfake Shield Diagnostics & Self-Test]", "color:#10b981;font-weight:bold;font-size:14px;");
+
+    // 1. Backend Connectivity
+    let backendStatus = "UNKNOWN";
+    try {
+      const resp = await fetch(`${config.backendUrl}/health`);
+      if (resp.ok) {
+        const h = await resp.json();
+        backendStatus = `ONLINE (${h.status}, video: ${h.video_status}, device: ${h.device})`;
+      } else {
+        backendStatus = `HTTP ${resp.status}`;
+      }
+    } catch (err) {
+      backendStatus = `OFFLINE (${err.message})`;
+    }
+    console.log(`%c• Backend Server (${config.backendUrl}):%c ${backendStatus}`, "font-weight:bold;", "color:#0ea5e9;");
+
+    // 2. Video Candidate Audit
+    const allVideos = Array.from(document.querySelectorAll("video"));
+    console.log(`%c• Total <video> tags in DOM:%c ${allVideos.length}`, "font-weight:bold;", "color:#0ea5e9;");
+    const videoAudit = allVideos.map((v, i) => {
+      const evalRes = evaluateVideoCandidate(v);
+      const r = v.getBoundingClientRect();
+      return {
+        Index: i + 1,
+        VideoTag: `${v.tagName.toLowerCase()}${v.id ? "#" + v.id : ""}`,
+        Accepted: evalRes.accepted ? "✅ YES" : "❌ NO",
+        Reason: evalRes.reason,
+        Resolution: `${v.videoWidth}x${v.videoHeight}`,
+        DOMRect: `${Math.round(r.left)},${Math.round(r.top)} (${Math.round(r.width)}x${Math.round(r.height)})`,
+        Parent: v.parentElement ? `${v.parentElement.tagName.toLowerCase()}.${v.parentElement.className.split(" ")[0]}` : "none"
+      };
+    });
+    console.table(videoAudit);
+
+    // 3. Active Tiles
+    console.log(`%c• Active Tracked Tiles:%c ${tileContexts.size}`, "font-weight:bold;", "color:#0ea5e9;");
+    const tileAudit = Array.from(tileContexts.values()).map((t) => {
+      const m = resolveTileMirrorState(t);
+      return {
+        TileID: t.id,
+        Participant: t.participantName,
+        IsSelfView: t.isSelfView ? "YES" : "NO",
+        MirrorState: `${m.shouldFlip ? "MIRRORED" : "NORMAL"} (${m.modeLabel})`,
+        FacesTracked: t.trackedFaces.size,
+        LastVerdict: t.lastVerdict,
+        InFlight: t.inFlight ? "YES" : "NO"
+      };
+    });
+    console.table(tileAudit);
+
+    // 4. Last Detection Response Shape
+    console.log("%c• Last Backend Response Sample:%c", "font-weight:bold;", "color:#0ea5e9;");
+    console.dir(lastBackendResponse || "None received yet");
+
+    if (lastError) {
+      console.warn(`Last encountered error: ${lastError}`);
+    }
+
+    console.groupEnd();
+    return {
+      backendStatus,
+      totalVideos: allVideos.length,
+      activeTiles: tileContexts.size,
+      lastBackendResponse,
+      lastError
+    };
+  };
+
   // Initialize
+  getOrCreateOverlayRoot();
   startSchedulerLoop();
   createDockPill();
+  render60FPSHUD();
 })();
