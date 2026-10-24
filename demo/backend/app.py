@@ -1567,7 +1567,7 @@ async def predict_frame(
         for i, box in enumerate(cand_boxes):
             prob = cand_probs[i] if cand_probs is not None and len(cand_probs) > i else 1.0
             lm = cand_landmarks[i] if cand_landmarks is not None and len(cand_landmarks) > i else None
-            if prob is not None and prob >= 0.35:
+            if prob is not None and prob >= 0.55:
                 bx1, by1, bx2, by2 = [int(v) for v in box]
                 bw, bh = bx2 - bx1, by2 - by1
 

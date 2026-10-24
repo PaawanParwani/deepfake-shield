@@ -9,11 +9,11 @@
 
   let config = {
     enabled: true,
-    backendUrl: "http://localhost:8000",
+    backendUrl: "http://127.0.0.1:8000",
     scanIntervalMs: 1000,       // 1.0s search interval
-    scanIntervalLockedMs: 750,  // 0.75s verification interval when locked
+    scanIntervalLockedMs: 800,  // 0.8s verification interval when locked
     sensitivityThreshold: 0.88,
-    mirrorMode: "normal",       // "normal" (direct 1:1 face alignment), "flipped"
+    mirrorMode: "normal",       // "normal" (auto-detects mirrored video), "flipped", "unmirrored"
     debug: false
   };
 
@@ -23,10 +23,9 @@
   let hudBadge = null;
   let overlayRoot = null;
   let dockPill = null;
-  let animFrameId = null;
-  let scanTimer = null;
   let consecutiveNoFaceCount = 0;
   let consecutiveBackendFailures = 0;
+  let loopRunning = false;
 
   // Active Multi-Face Tracking Map: id -> TrackedFace
   const trackedFaces = new Map();
@@ -48,20 +47,22 @@
       .replace(/'/g, "&#39;");
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   // Sync extension storage config
   if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(
       ["enabled", "backendUrl", "scanIntervalMs", "sensitivityThreshold", "mirrorMode"],
       (stored) => {
         if (stored) {
-          if (stored.backendUrl && (stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend"))) {
-            stored.backendUrl = "http://localhost:8000";
-            chrome.storage.local.set({ backendUrl: "http://localhost:8000" });
+          if (!stored.backendUrl || stored.backendUrl.includes("localhost") || stored.backendUrl.includes("onrender.com") || stored.backendUrl.includes("deepfake-shield-backend")) {
+            stored.backendUrl = "http://127.0.0.1:8000";
+            chrome.storage.local.set({ backendUrl: "http://127.0.0.1:8000" });
           }
-          // Reset any old inverted mirrorMode
-          if (!stored.mirrorMode || stored.mirrorMode === "auto" || stored.mirrorMode === "mirrored") {
+          if (!stored.mirrorMode) {
             stored.mirrorMode = "normal";
-            chrome.storage.local.set({ mirrorMode: "normal" });
           }
           config = { ...config, ...stored };
         }
@@ -72,9 +73,10 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local") {
         for (let k in changes) {
-          if (k === "backendUrl" && changes[k].newValue && (changes[k].newValue.includes("onrender.com") || changes[k].newValue.includes("deepfake-shield-backend"))) {
-            config.backendUrl = "http://localhost:8000";
-          } else {
+          if (k === "backendUrl") {
+            const v = changes[k].newValue;
+            config.backendUrl = (!v || v.includes("localhost") || v.includes("onrender.com")) ? "http://127.0.0.1:8000" : v;
+          } else if (k in config) {
             config[k] = changes[k].newValue;
           }
         }
@@ -96,7 +98,7 @@
     return overlayRoot;
   }
 
-  // Lightweight 360p Compact Frame Capture (~12KB, zero system lag)
+  // Lightweight 320p Compact Frame Capture (~15KB, zero system lag)
   const offscreenCanvas = document.createElement("canvas");
   const offscreenCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -107,7 +109,7 @@
     if (!vw || !vh || vw < 40 || vh < 40) return null;
 
     try {
-      const maxDim = 280;
+      const maxDim = 320;
       const scale = Math.min(1.0, maxDim / Math.max(vw, vh));
       const targetW = Math.max(160, Math.round(vw * scale));
       const targetH = Math.max(120, Math.round(vh * scale));
@@ -136,7 +138,7 @@
     if (!video) return false;
 
     // Explicit user override if configured
-    if (config.mirrorMode === "mirrored") return true;
+    if (config.mirrorMode === "flipped") return true;
     if (config.mirrorMode === "unmirrored") return false;
 
     let el = video;
@@ -164,13 +166,11 @@
             ) {
               mirrorCount++;
             } else if (t.startsWith("matrix(")) {
-              // 2D affine transform matrix(a, b, c, d, tx, ty) where 'a' is horizontal scale
               const match = t.match(/^matrix\(\s*([-\d.]+)/);
               if (match && parseFloat(match[1]) < -0.1) {
                 mirrorCount++;
               }
             } else if (t.startsWith("matrix3d(")) {
-              // 3D transform matrix3d(m11, ...) where 'm11' is horizontal scale
               const match = t.match(/^matrix3d\(\s*([-\d.]+)/);
               if (match && parseFloat(match[1]) < -0.1) {
                 mirrorCount++;
@@ -202,7 +202,7 @@
     return mirrorCount % 2 === 1;
   }
 
-  // Exact Rendered Video Geometry
+  // Exact Rendered Video Geometry with object-fit compensation
   function getRenderedVideoGeometry(video, fw, fh) {
     const rect = video.getBoundingClientRect();
     const elemW = rect.width;
@@ -283,86 +283,118 @@
     return best;
   }
 
-  // Main Live Frame Analysis
-  async function analyzeLiveFrame() {
-    if (document.hidden || !config.enabled || inFlight) return;
-
-    const video = findPrimaryVideo();
-    if (!video) {
-      hideHUD();
-      return;
-    }
-
-    if (activeVideo !== video) {
-      activeVideo = video;
-      attachHUD(video);
-    }
-
-    const capture = captureCompactFrame(video);
-    if (!capture) return;
-
-    inFlight = true;
-    const reqStart = performance.now();
-
-    // Safety watchdog: 9000ms max (tolerates CPU spikes while keeping service worker responsive)
-    const watchdogId = setTimeout(() => {
-      if (inFlight) {
-        inFlight = false;
-        consecutiveBackendFailures++;
-        if (consecutiveBackendFailures >= 3) {
-          renderOffline();
-        }
+  // Single-Thread Non-Overlapping Live Frame Scan (Promise-based)
+  function executeLiveScan() {
+    return new Promise((resolve) => {
+      if (!config.enabled || inFlight) {
+        resolve();
+        return;
       }
-    }, 9000);
 
-    function handleSuccess(data) {
-      clearTimeout(watchdogId);
-      inFlight = false;
-      consecutiveBackendFailures = 0;
-      const clientLatency = Math.round(performance.now() - reqStart);
-      try {
-        processDetections(data, video, capture.capturedW, capture.capturedH, clientLatency);
-      } catch (err) {
-        debugLog("Detection process error:", err);
+      const video = findPrimaryVideo();
+      if (!video) {
+        hideHUD();
+        resolve();
+        return;
       }
-    }
 
-    // Always route through background service worker (NEVER fetch directly in Google Meet origin)
-    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-      try {
-        chrome.runtime.sendMessage(
-          {
-            type: "PREDICT_FRAME",
-            payload: { backendUrl: config.backendUrl, image_base64: capture.dataUrl }
-          },
-          (response) => {
-            clearTimeout(watchdogId);
-            inFlight = false;
-            if (chrome.runtime.lastError || !response || !response.success) {
-              consecutiveBackendFailures++;
-              if (consecutiveBackendFailures >= 3) {
-                renderOffline();
-              }
-              scheduleNextScan(1200);
-              return;
-            }
-            handleSuccess(response.data);
+      if (activeVideo !== video) {
+        activeVideo = video;
+        attachHUD(video);
+      }
+
+      const capture = captureCompactFrame(video);
+      if (!capture) {
+        resolve();
+        return;
+      }
+
+      inFlight = true;
+      const reqStart = performance.now();
+
+      // Generous watchdog timeout (7500ms) to tolerate background CPU usage
+      const watchdogId = setTimeout(() => {
+        if (inFlight) {
+          inFlight = false;
+          consecutiveBackendFailures++;
+          if (consecutiveBackendFailures >= 6) {
+            renderOffline();
           }
-        );
-        return;
-      } catch (sendErr) {
-        clearTimeout(watchdogId);
-        inFlight = false;
-        consecutiveBackendFailures++;
-        if (consecutiveBackendFailures >= 3) {
-          renderOffline();
+          resolve();
         }
-        scheduleNextScan(1200);
-        return;
+      }, 7500);
+
+      if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+        try {
+          chrome.runtime.sendMessage(
+            {
+              type: "PREDICT_FRAME",
+              payload: { backendUrl: config.backendUrl, image_base64: capture.dataUrl }
+            },
+            (response) => {
+              clearTimeout(watchdogId);
+              inFlight = false;
+
+              if (chrome.runtime.lastError || !response || !response.success) {
+                consecutiveBackendFailures++;
+                if (consecutiveBackendFailures >= 6) {
+                  renderOffline();
+                }
+                resolve();
+                return;
+              }
+
+              consecutiveBackendFailures = 0;
+              const clientLatency = Math.round(performance.now() - reqStart);
+              try {
+                processDetections(response.data, video, capture.capturedW, capture.capturedH, clientLatency);
+              } catch (err) {
+                debugLog("Detection process error:", err);
+              }
+              resolve();
+            }
+          );
+          return;
+        } catch (sendErr) {
+          clearTimeout(watchdogId);
+          inFlight = false;
+          consecutiveBackendFailures++;
+          if (consecutiveBackendFailures >= 6) {
+            renderOffline();
+          }
+          resolve();
+          return;
+        }
       }
+
+      inFlight = false;
+      resolve();
+    });
+  }
+
+  // Continuous Sequential Scanning Loop (Zero Race Conditions, Zero IPC Flood)
+  async function startDetectionLoop() {
+    if (loopRunning) return;
+    loopRunning = true;
+
+    while (config.enabled) {
+      if (document.hidden) {
+        await sleep(1000);
+        continue;
+      }
+
+      try {
+        await executeLiveScan();
+      } catch (err) {
+        debugLog("Detection scan loop error:", err);
+      }
+
+      const isLocked = trackedFaces.size > 0;
+      const interval = isLocked ? config.scanIntervalLockedMs : config.scanIntervalMs;
+      await sleep(interval);
     }
 
-    inFlight = false;
+    loopRunning = false;
   }
 
   function attachHUD(video) {
@@ -385,12 +417,18 @@
       if (flipBtn) {
         flipBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          config.mirrorMode = config.mirrorMode === "flipped" ? "normal" : "flipped";
+          const curMirrored = activeVideo ? isVideoMirrored(activeVideo) : false;
+          const currentFlip = config.mirrorMode === "flipped" ? true :
+                              config.mirrorMode === "unmirrored" ? false :
+                              curMirrored;
+
+          // Toggle to opposite
+          config.mirrorMode = currentFlip ? "unmirrored" : "flipped";
           if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
             chrome.storage.local.set({ mirrorMode: config.mirrorMode });
           }
-          flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Flip";
-          analyzeLiveFrame();
+          flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Normal";
+          executeLiveScan();
         });
       }
     }
@@ -403,7 +441,7 @@
           activeVideo = v;
           consecutiveNoFaceCount = 0;
           attachHUD(v);
-          analyzeLiveFrame();
+          executeLiveScan();
         });
       }
     });
@@ -426,10 +464,17 @@
     if (!hudBadge) return;
     const root = getOrCreateOverlayRoot();
 
-    const { p_fake, verdict, confidence, face_detected, bounding_box, latency_ms, emotion } = data;
-    const fw = data.frame_width || capturedW || 360;
+    const { verdict, face_detected, latency_ms, emotion } = data;
+    const fw = data.frame_width || capturedW || 320;
     const fh = data.frame_height || capturedH || 240;
-    const mirrored = isVideoMirrored(video);
+
+    // High-precision mirroring alignment:
+    // When mirrorMode is "normal", automatically adapt to whether the video is mirrored on-screen!
+    const isMirrored = isVideoMirrored(video);
+    const shouldFlip = config.mirrorMode === "flipped" ? true :
+                       config.mirrorMode === "unmirrored" ? false :
+                       isMirrored;
+
     const geom = getRenderedVideoGeometry(video, fw, fh);
 
     // ZERO FACES DETECTED: Instant Ghost Box Purge
@@ -449,16 +494,15 @@
         }
       }
       trackedFaces.clear();
+      updateHUDBadgePosition();
       return;
     }
 
     consecutiveNoFaceCount = 0;
 
     const detections = data.faces;
-    const now = performance.now();
     const matchedTrackIds = new Set();
 
-    const shouldFlip = config.mirrorMode === "flipped";
     const mappedDetections = detections.map((det, idx) => {
       const box = det.bounding_box || [0, 0, 0, 0];
       const bx1 = box[0];
@@ -466,6 +510,7 @@
       const bx2 = box[2];
       const by2 = box[3];
 
+      // Mirror flip X coordinates when video is mirrored (e.g. Google Meet self-view)
       const effX1 = shouldFlip ? (fw - bx2) : bx1;
       const effX2 = shouldFlip ? (fw - bx1) : bx2;
 
@@ -503,12 +548,6 @@
         bestMatch = {
           id: newId,
           label: `Face #${mDet.targetIndex}`,
-          current: { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH },
-          target: { x: mDet.screenX, y: mDet.screenY, w: mDet.screenW, h: mDet.screenH },
-          smoothedScore: mDet.det.p_fake || 0.0,
-          verdict: mDet.det.verdict || "authentic",
-          confidence: mDet.det.confidence || 100.0,
-          emotion: mDet.det.emotion || "Focused / Calm 👤",
           overlayElement: overlayEl,
           tagElement: tagEl
         };
@@ -521,7 +560,7 @@
       bestMatch.verdict = mDet.det.verdict || "authentic";
       bestMatch.confidence = mDet.det.confidence || 100.0;
 
-      // Direct GPU-accelerated CSS positioning (Zero main-thread layout thrashing, 0% CPU)
+      // Direct GPU-accelerated CSS positioning (Zero main-thread layout thrashing)
       const el = bestMatch.overlayElement;
       if (el) {
         el.style.display = "block";
@@ -593,14 +632,29 @@
       }
     }
 
+    // Throttled status broadcast to background
+    broadcastStatusUpdate(
+      suspiciousFaces.length > 0 ? "suspicious" : "authentic",
+      totalFaces > 0 ? activeList[0].confidence : 100.0,
+      primaryEmotion
+    );
+  }
+
+  // Throttled Status Broadcast
+  let lastBroadcastStatus = "";
+  let lastBroadcastTime = 0;
+
+  function broadcastStatusUpdate(verdict, confidence, emotion) {
+    const key = `${verdict}_${Math.round(confidence / 5)}_${emotion}`;
+    const now = performance.now();
+    if (key === lastBroadcastStatus && now - lastBroadcastTime < 3000) return;
+    lastBroadcastStatus = key;
+    lastBroadcastTime = now;
+
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({
         type: "DETECTION_UPDATE",
-        payload: {
-          verdict: suspiciousFaces.length > 0 ? "suspicious" : "authentic",
-          confidence: totalFaces > 0 ? activeList[0].confidence : 100.0,
-          emotion: primaryEmotion
-        }
+        payload: { verdict, confidence, emotion }
       }).catch(() => {});
     }
   }
@@ -618,7 +672,6 @@
       }
     }
     trackedFaces.clear();
-    animFrameId = null;
   }
 
   function hideHUD() {
@@ -629,7 +682,6 @@
       }
     }
     trackedFaces.clear();
-    animFrameId = null;
   }
 
   // Draggable Dock Pill
@@ -662,7 +714,7 @@
       if (v) {
         activeVideo = v;
         attachHUD(v);
-        analyzeLiveFrame();
+        executeLiveScan();
       }
     });
 
@@ -673,7 +725,11 @@
         chrome.storage.local.set({ enabled: config.enabled });
       }
       updateDockPill();
-      if (!config.enabled) hideHUD();
+      if (!config.enabled) {
+        hideHUD();
+      } else {
+        startDetectionLoop();
+      }
     });
 
     makeDraggable(dockPill);
@@ -768,7 +824,7 @@
 
   window.addEventListener("resize", updateHUDBadgePosition);
 
-  // Throttled check for camera connects: only runs if activeVideo is disconnected
+  // Throttled check for camera reconnects if video disconnects
   setInterval(() => {
     if (document.hidden || !config.enabled) return;
     if (!activeVideo || !document.body.contains(activeVideo)) {
@@ -776,25 +832,12 @@
       if (v) {
         activeVideo = v;
         attachHUD(v);
-        analyzeLiveFrame();
+        executeLiveScan();
       }
     }
   }, 2500);
 
-  // Dynamic Detection Loop (1.0s search, 0.75s locked, 3.5s offline backoff)
-  function scheduleNextScan(delayMs) {
-    if (scanTimer) clearTimeout(scanTimer);
-    const isLocked = trackedFaces.size > 0;
-    const interval = delayMs || (isLocked ? config.scanIntervalLockedMs : config.scanIntervalMs);
-    scanTimer = setTimeout(async () => {
-      try {
-        await analyzeLiveFrame();
-      } finally {
-        scheduleNextScan();
-      }
-    }, interval);
-  }
-  scheduleNextScan();
-
+  // Start the rock-solid continuous scanning loop
+  startDetectionLoop();
   createDockPill();
 })();

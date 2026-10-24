@@ -3,7 +3,7 @@
   "use strict";
 
   function initPopup() {
-    let backendUrl = "http://localhost:8000";
+    let backendUrl = "http://127.0.0.1:8000";
 
     // Elements
     const backendStatusPill = document.getElementById("backendStatusPill");
@@ -85,11 +85,11 @@
           if (!res) res = {};
 
           // Backend URL
-          if (res.backendUrl && !res.backendUrl.includes("onrender.com") && !res.backendUrl.includes("deepfake-shield-backend")) {
+          if (res.backendUrl && !res.backendUrl.includes("localhost") && !res.backendUrl.includes("onrender.com") && !res.backendUrl.includes("deepfake-shield-backend")) {
             backendUrl = res.backendUrl.replace(/\/+$/, "");
           } else {
-            backendUrl = "http://localhost:8000";
-            chrome.storage.local.set({ backendUrl: "http://localhost:8000" });
+            backendUrl = "http://127.0.0.1:8000";
+            chrome.storage.local.set({ backendUrl: "http://127.0.0.1:8000" });
           }
           if (popupBackendInput) popupBackendInput.value = backendUrl;
 

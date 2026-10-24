@@ -148,11 +148,11 @@
   border: 2px solid #10b981;
   border-radius: 10px;
   box-shadow: 0 0 20px rgba(16, 185, 129, 0.4), inset 0 0 15px rgba(16, 185, 129, 0.1);
-  transition: left 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
-              top 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
-              width 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
-              height 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
-              border-color 0.25s, box-shadow 0.25s, opacity 0.3s;
+  transition: left 0.20s ease-out,
+              top 0.20s ease-out,
+              width 0.20s ease-out,
+              height 0.20s ease-out,
+              border-color 0.25s, box-shadow 0.25s, opacity 0.25s;
   box-sizing: border-box;
   will-change: left, top, width, height;
 }

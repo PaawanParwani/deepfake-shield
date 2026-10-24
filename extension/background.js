@@ -1,13 +1,11 @@
 // Service Worker for Human Verification Deepfake Shield Extension
 
 function sanitizeBackendUrl(url) {
-  if (!url || url.includes("onrender.com") || url.includes("deepfake-shield-backend")) {
-    return "http://localhost:8000";
+  if (!url || url.includes("localhost") || url.includes("onrender.com") || url.includes("deepfake-shield-backend")) {
+    return "http://127.0.0.1:8000";
   }
   return url.replace(/\/+$/, "");
 }
-
-let backendDownUntil = 0;
 
 // Ensure local PC backend is configured on install and startup
 function ensureConfig() {
@@ -17,7 +15,7 @@ function ensureConfig() {
     chrome.storage.local.set({
       enabled: data && data.enabled !== undefined ? data.enabled : true,
       backendUrl: cleanUrl,
-      scanIntervalMs: data && data.scanIntervalMs ? data.scanIntervalMs : 1000,
+      scanIntervalMs: data && data.scanIntervalMs ? data.scanIntervalMs : 900,
       sensitivityThreshold: data && data.sensitivityThreshold ? data.sensitivityThreshold : 0.88,
       alertNotifications: true,
       lastDetections: []
@@ -36,7 +34,7 @@ chrome.runtime.onStartup.addListener(() => {
 // Listen for updates and proxy requests from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "DETECTION_UPDATE") {
-    const { verdict, confidence, p_fake, emotion } = message.payload || {};
+    const { verdict, confidence, emotion } = message.payload || {};
     const tabId = sender.tab ? sender.tab.id : undefined;
 
     if (verdict === "suspicious") {
@@ -59,7 +57,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
     sendResponse({ status: "acknowledged" });
-    return true;
+    return false;
   }
 
   // Native background fetch proxy: routes frames cleanly to local backend
@@ -88,29 +86,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: false, error: err.message });
       });
 
-    return true;
+    return true; // Keep message port open for async response
   }
 
   // Backend Health check proxy
   if (message.type === "CHECK_HEALTH") {
     const targetUrl = sanitizeBackendUrl(message.payload ? message.payload.backendUrl : null);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1800);
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
 
     fetch(`${targetUrl}/health`, { method: "GET", signal: controller.signal })
       .then(async (resp) => {
         clearTimeout(timeoutId);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
-        backendDownUntil = 0;
         sendResponse({ success: true, data });
       })
       .catch((err) => {
         clearTimeout(timeoutId);
         sendResponse({ success: false, error: err.message });
       });
-    return true;
+    return true; // Keep message port open for async response
   }
 
-  return true;
+  return false;
 });
