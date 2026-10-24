@@ -339,12 +339,22 @@
   function extractParticipantName(video, tileIndex) {
     if (!video) return `Participant #${tileIndex}`;
 
+    function cleanName(raw, isSelf) {
+      if (!raw) return isSelf ? "You" : `Participant #${tileIndex}`;
+      let text = String(raw).trim();
+      // Remove any existing redundant "(You)" markers
+      text = text.replace(/\s*\(\s*You\s*\)\s*/gi, "").trim();
+      if (!text || text.toLowerCase() === "you") {
+        return "You";
+      }
+      return isSelf ? `${text} (You)` : text;
+    }
+
     // 1. Direct self-view attributes
     const selfEl = video.closest("[data-self-name]");
     if (selfEl) {
       const name = selfEl.getAttribute("data-self-name");
-      if (name && name.trim()) return `${name.trim()} (You)`;
-      return "You";
+      return cleanName(name, true);
     }
 
     if (
@@ -367,14 +377,14 @@
       if (nameEl && nameEl.textContent && nameEl.textContent.trim()) {
         const text = nameEl.textContent.trim();
         if (text.length > 0 && text.length < 35 && !text.includes(":") && !text.includes("Presenting")) {
-          return text;
+          return cleanName(text, false);
         }
       }
 
       // Aria label on tile container
       const aria = container.getAttribute("aria-label");
       if (aria && aria.trim() && !aria.includes("Google Meet") && !aria.includes("Call")) {
-        return aria.trim();
+        return cleanName(aria, false);
       }
 
       container = container.parentElement;
@@ -451,6 +461,9 @@
     if (window.ResizeObserver) {
       tile.resizeObserver = new ResizeObserver(() => {
         tile.lastMirrorTs = 0; // invalidate mirror cache on resize
+        const { shouldFlip } = resolveTileMirrorState(tile);
+        tile.currentFlipped = shouldFlip;
+        updateTileFlipButton(tile);
         repositionTileFaces(tile);
         repositionTileBadge(tile);
       });
@@ -486,6 +499,9 @@
       }
 
       tile.lastMirrorTs = 0;
+      const { shouldFlip } = resolveTileMirrorState(tile);
+      tile.currentFlipped = shouldFlip;
+      updateTileFlipButton(tile);
       repositionTileFaces(tile);
       repositionTileBadge(tile);
     });
@@ -577,9 +593,20 @@
       }
     });
 
-    // 3. Update HUD badge positions
+    // 3. Update HUD badge positions & check for mirror state changes (re-checked every 1s)
+    const now = performance.now();
     for (const [, tile] of tileContexts) {
       repositionTileBadge(tile);
+      if (now - tile.lastMirrorTs >= 1000) {
+        const { shouldFlip } = resolveTileMirrorState(tile);
+        if (tile.currentFlipped !== undefined && tile.currentFlipped !== shouldFlip) {
+          tile.currentFlipped = shouldFlip;
+          updateTileFlipButton(tile);
+          repositionTileFaces(tile);
+        } else {
+          tile.currentFlipped = shouldFlip;
+        }
+      }
     }
   }
 

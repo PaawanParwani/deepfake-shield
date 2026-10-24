@@ -315,6 +315,52 @@
       };
     };
 
+    window.__validateGroundTruthAccuracy = function() {
+      const v1 = document.getElementById("v-self");
+      const v1Rect = v1.getBoundingClientRect();
+      const geom1 = {
+        renderW: v1Rect.width,
+        renderH: v1Rect.height,
+        left: v1Rect.left,
+        top: v1Rect.top
+      };
+
+      // Ground truth normalized face center in video is (0.50, 0.50)
+      // Tile 1 is CSS mirrored: screen_norm_x = 1.0 - 0.50 = 0.50
+      const expectedCenterX = geom1.left + (0.50 * geom1.renderW);
+      const expectedCenterY = geom1.top + (0.50 * geom1.renderH);
+
+      const overlays = Array.from(document.querySelectorAll(".hv-face-overlay"));
+      const o1 = overlays.find(o => {
+        const r = o.getBoundingClientRect();
+        return r.left >= v1Rect.left - 50 && r.right <= v1Rect.right + 50;
+      });
+
+      if (!o1) {
+        return { success: false, error: "No overlay found for Tile 1" };
+      }
+
+      const o1Rect = o1.getBoundingClientRect();
+      const actualCenterX = o1Rect.left + (o1Rect.width / 2);
+      const actualCenterY = o1Rect.top + (o1Rect.height / 2);
+
+      const deltaX = Math.abs(actualCenterX - expectedCenterX);
+      const deltaY = Math.abs(actualCenterY - expectedCenterY);
+      const errorRatio = deltaX / Math.max(1, o1Rect.width);
+
+      return {
+        success: errorRatio <= 0.10,
+        errorRatio: Math.round(errorRatio * 1000) / 1000,
+        maxAllowedRatio: 0.10,
+        deltaX: Math.round(deltaX * 10) / 10,
+        deltaY: Math.round(deltaY * 10) / 10,
+        expectedCenter: [Math.round(expectedCenterX), Math.round(expectedCenterY)],
+        actualCenter: [Math.round(actualCenterX), Math.round(actualCenterY)],
+        faceWidth: Math.round(o1Rect.width),
+        faceHeight: Math.round(o1Rect.height)
+      };
+    };
+
     document.getElementById("btn-report").addEventListener("click", () => {
       const t = window.__collectDeepfakeShieldTelemetry();
       log("TELEMETRY SNAPSHOT:\n" + JSON.stringify(t, null, 2));
