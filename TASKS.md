@@ -36,10 +36,11 @@ Legend: [ ] todo, [~] in progress, [x] done. Owner: A = cybersecurity, B = data 
 - [x] `demo/backend/app.py` with `/predict/audio`, `/predict/video`, `/predict/frame`, `/health`, `/physiology/status`, and `/predict/multimodal`
 - [x] `/health` reports the loaded audio architecture dynamically instead of always claiming CRNN-BiGRU
 - [x] `demo/frontend/index.html` glassmorphic UI, audio/video upload, live scoring
-- [x] Cloudflare Pages frontend deployed from `main` and verified at `https://deepfake-shield.pages.dev` (HTTP 200; updated copy served)
-- [x] Backend fixes deployed to Render from `main` (`ec06dbf`); `/health` and `/` returned HTTP 200, the loaded CRNN-BiGRU and video models were ready, and CORS preflight from the Pages origin passed. This deployment still uses the existing CRNN audio checkpoint; the full wav2vec2 training result is pending
-- [x] Removed the frontend's 25-second Render keep-alive and 4-second health retry loop; free-tier health checks now run on load/config save or when the status badge is clicked, avoiding unnecessary instance-hours and request bursts. Render billing showed 6.07/750 free instance hours used at the time checked, so monthly free hours were not exhausted
-- [x] Chrome extension prototype (`extension/` Manifest V3, anonymous face labels and live status HUD; live meeting integration remains outside locked project scope)
+- [x] Cloudflare Pages frontend deployed from `main` and verified at `https://deepfake-shield.pages.dev` and `https://deepfake-shield.pages.dev/visualizer` (HTTP 200; updated copy served)
+- [x] Completely removed Render dependencies, configs (`render.yaml`, `deploy/render/`), and endpoints repository-wide; local FastAPI backend (`http://localhost:8000`) and Cloudflare Pages form the active deployment stack
+- [x] Chrome extension updated with universal matching (`<all_urls>`), real-time emotion telemetry, background service worker request proxying, and repacked zip bundle (`deploy/deepfake-shield-extension.zip`)
+- [x] Main Dashboard streamlined to strictly focus on the 3 pillars: Video Authenticity (FaceForensics++ C23), Voice Authenticity (ASVspoof 2019 LA), and Affect & Emotion (RAF-DB Neural ONNX), resolving text crowding
+- [x] Dedicated Forensic Model Visualizer (`demo/frontend/visualizer.html` & `/visualizer`) showcasing step-by-step background neural inference: Grad-CAM artifact saliency, Log-Mel spectrogram harmonics vs synthetic voice voids, and RAF-DB Softmax with EMA temporal smoothing
 - [x] Combine verdicts (either modality > 0.5 => Suspicious) + Calibrated Bayesian Reliability Gating
 - [x] Script 60-90 s demo video for YC / academic presentation (`docs/15_DEMO_VIDEO_SCRIPT.md`)
 - [x] Real-world RAF-DB dataset neural emotion recognition (`models/rafdb_emotion.onnx`) with EMA temporal smoothing, sub-15ms video ONNX inference, and 60 FPS decoupled HUD reticle tracking with lerp interpolation
