@@ -1606,39 +1606,24 @@ async def predict_frame(
             bx1, by1, bx2, by2 = box
             bw, bh = bx2 - bx1, by2 - by1
 
-            # Precision Anthropometric Face Framing (supports caps, hats, and tilt while preserving chin line)
-            if lm is not None and len(lm) >= 5:
-                le = np.array(lm[0], dtype=np.float32)
-                re = np.array(lm[1], dtype=np.float32)
-                nose = np.array(lm[2], dtype=np.float32)
-                ml = np.array(lm[3], dtype=np.float32)
-                mr = np.array(lm[4], dtype=np.float32)
-                eye_cx = (le[0] + re[0]) / 2.0
-                eye_cy = (le[1] + re[1]) / 2.0
-                eye_dist = max(10.0, float(np.linalg.norm(re - le)))
+            # Natural Anthropometric Face Framing based directly on detected face boundary
+            head_pad_x = int(bw * 0.06)
+            head_pad_top = int(bh * 0.12)
+            head_pad_bottom = int(bh * 0.06)
 
-                # Capture full forehead/cap visor without clipping
-                top_y = max(0, min(by1, int(eye_cy - 1.25 * eye_dist)))
-                mouth_y = max(ml[1], mr[1])
-                bottom_y = min(h, int(max(mouth_y + 0.38 * eye_dist, nose[1] + 0.65 * eye_dist)))
+            ui_box = [
+                int(max(0, bx1 - head_pad_x)),
+                int(max(0, by1 - head_pad_top)),
+                int(min(w, bx2 + head_pad_x)),
+                int(min(h, by2 + head_pad_bottom)),
+            ]
 
-                ui_box = [
-                    int(max(0, eye_cx - 1.15 * eye_dist)),
-                    int(top_y),
-                    int(min(w, eye_cx + 1.15 * eye_dist)),
-                    int(bottom_y),
-                ]
-            else:
-                head_w = bw * 1.05
-                head_h = head_w * 1.10
-                cx_h = (bx1 + bx2) / 2.0
-                cy_h = (by1 + by2) / 2.0
-                ui_box = [
-                    int(max(0, cx_h - head_w / 2.0)),
-                    int(max(0, cy_h - head_h * 0.50)),
-                    int(min(w, cx_h + head_w / 2.0)),
-                    int(min(h, cy_h + head_h * 0.40)),
-                ]
+            norm_box = [
+                round(max(0.0, min(1.0, float(ui_box[0]) / max(1.0, float(w)))), 5),
+                round(max(0.0, min(1.0, float(ui_box[1]) / max(1.0, float(h)))), 5),
+                round(max(0.0, min(1.0, float(ui_box[2]) / max(1.0, float(w)))), 5),
+                round(max(0.0, min(1.0, float(ui_box[3]) / max(1.0, float(h)))), 5),
+            ]
 
             # 2. Aspect-Ratio Preserving Square Crop (matches FF++ training distribution)
             cx = int((bx1 + bx2) / 2)
@@ -1695,6 +1680,7 @@ async def predict_frame(
 
                 extracted.append({
                     "ui_box": ui_box,
+                    "norm_box": norm_box,
                     "raw_box": box,
                     "crop": crop,
                     "transposed": transposed,
@@ -1861,6 +1847,7 @@ async def predict_frame(
             "face_id": f"target_{idx + 1}",
             "label": f"Target #{idx + 1}",
             "bounding_box": [int(v) for v in c_info["ui_box"]],
+            "norm_bbox": c_info.get("norm_box", [0.0, 0.0, 0.0, 0.0]),
             "raw_box": [int(v) for v in c_info["raw_box"]],
             "p_fake": round(float(p_f), 4),
             "raw_p_fake": round(float(raw_p_f), 4),
@@ -1878,6 +1865,7 @@ async def predict_frame(
 
     face_detected = True
     bounding_box = [int(v) for v in faces_list[0]["bounding_box"]]
+    norm_bbox = faces_list[0]["norm_bbox"] if faces_list else None
     max_p_fake = float(max(f["p_fake"] for f in faces_list))
     has_fake = any(f["verdict"] == "suspicious" for f in faces_list)
     has_uncertain = any(f["verdict"] == "uncertain" for f in faces_list)
@@ -1905,6 +1893,7 @@ async def predict_frame(
         "face_detected": True,
         "face_count": face_count,
         "bounding_box": bounding_box,
+        "norm_bbox": norm_bbox,
         "emotion": primary_emotion,
         "faces": faces_list,
         "auto_focus": {

@@ -139,13 +139,12 @@
 
     // Explicit user override if configured
     if (config.mirrorMode === "flipped") return true;
-    if (config.mirrorMode === "unmirrored") return false;
+    if (config.mirrorMode === "normal") return false; // Default: direct 1:1 camera alignment!
 
     let el = video;
     let mirrorCount = 0;
     while (el && el !== document.documentElement) {
       try {
-        // 1. Direct inline style check
         const inlineT = (el.style && el.style.transform) ? el.style.transform.toLowerCase() : "";
         if (
           inlineT.includes("scalex(-1)") ||
@@ -155,7 +154,6 @@
         ) {
           mirrorCount++;
         } else {
-          // 2. Computed style transform check (in Chromium, scaleX(-1) computes to matrix(-1, 0, 0, 1, 0, 0))
           const compStyle = window.getComputedStyle(el);
           const t = (compStyle.transform || compStyle.webkitTransform || "").toLowerCase();
           if (t && t !== "none") {
@@ -182,35 +180,16 @@
       el = el.parentElement;
     }
 
-    // 3. Google Meet self-view detection:
-    // On meet.google.com, local self-view feeds are always mirrored.
-    if (mirrorCount % 2 === 0 && window.location.hostname.includes("meet.google.com")) {
-      const isSelf = !!(
-        video.closest("[data-self-name]") ||
-        video.closest("[data-is-self-view='true']") ||
-        video.getAttribute("data-is-self-view") === "true" ||
-        video.className.includes("self") ||
-        (video.parentElement && video.parentElement.className.includes("self"))
-      );
-      if (isSelf) return true;
-
-      // Single-video solo room check on Google Meet
-      const allMeetVideos = document.querySelectorAll("video");
-      if (allMeetVideos.length === 1) return true;
-    }
-
     return mirrorCount % 2 === 1;
   }
 
-  // Exact Rendered Video Geometry with object-fit compensation
-  function getRenderedVideoGeometry(video, fw, fh) {
+  // Exact Rendered Video Geometry with intrinsic aspect-ratio compensation
+  function getRenderedVideoGeometry(video) {
     const rect = video.getBoundingClientRect();
     const elemW = rect.width;
     const elemH = rect.height;
-
-    if (!fw || !fh || fw <= 0 || fh <= 0) {
-      return { left: rect.left, top: rect.top, width: elemW, height: elemH, renderW: elemW, renderH: elemH, offsetX: 0, offsetY: 0 };
-    }
+    const vw = video.videoWidth || elemW || 640;
+    const vh = video.videoHeight || elemH || 480;
 
     const style = window.getComputedStyle(video);
     const objectFit = style.objectFit || "cover";
@@ -220,18 +199,34 @@
     let offsetX = 0;
     let offsetY = 0;
 
+    const videoRatio = vw / vh;
+    const elemRatio = elemW / elemH;
+
     if (objectFit === "contain") {
-      const scale = Math.min(elemW / fw, elemH / fh);
-      renderW = fw * scale;
-      renderH = fh * scale;
-      offsetX = (elemW - renderW) / 2;
-      offsetY = (elemH - renderH) / 2;
+      if (elemRatio > videoRatio) {
+        renderH = elemH;
+        renderW = elemH * videoRatio;
+        offsetX = (elemW - renderW) / 2;
+        offsetY = 0;
+      } else {
+        renderW = elemW;
+        renderH = elemW / videoRatio;
+        offsetX = 0;
+        offsetY = (elemH - renderH) / 2;
+      }
     } else {
-      const scale = Math.max(elemW / fw, elemH / fh);
-      renderW = fw * scale;
-      renderH = fh * scale;
-      offsetX = (elemW - renderW) / 2;
-      offsetY = (elemH - renderH) / 2;
+      // object-fit: cover (default in Google Meet participant tiles)
+      if (elemRatio > videoRatio) {
+        renderW = elemW;
+        renderH = elemW / videoRatio;
+        offsetX = 0;
+        offsetY = (elemH - renderH) / 2;
+      } else {
+        renderH = elemH;
+        renderW = elemH * videoRatio;
+        offsetX = (elemW - renderW) / 2;
+        offsetY = 0;
+      }
     }
 
     return { left: rect.left, top: rect.top, width: elemW, height: elemH, renderW, renderH, offsetX, offsetY };
@@ -415,15 +410,11 @@
 
       const flipBtn = hudBadge.querySelector("#hv-btn-flip");
       if (flipBtn) {
+        flipBtn.textContent = config.mirrorMode === "flipped" ? "⇄ Flipped" : "⇄ Normal";
         flipBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          const curMirrored = activeVideo ? isVideoMirrored(activeVideo) : false;
-          const currentFlip = config.mirrorMode === "flipped" ? true :
-                              config.mirrorMode === "unmirrored" ? false :
-                              curMirrored;
-
-          // Toggle to opposite
-          config.mirrorMode = currentFlip ? "unmirrored" : "flipped";
+          // Toggle between direct 1:1 ("normal") and horizontal mirror ("flipped")
+          config.mirrorMode = config.mirrorMode === "flipped" ? "normal" : "flipped";
           if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
             chrome.storage.local.set({ mirrorMode: config.mirrorMode });
           }
@@ -468,14 +459,8 @@
     const fw = data.frame_width || capturedW || 320;
     const fh = data.frame_height || capturedH || 240;
 
-    // High-precision mirroring alignment:
-    // When mirrorMode is "normal", automatically adapt to whether the video is mirrored on-screen!
-    const isMirrored = isVideoMirrored(video);
-    const shouldFlip = config.mirrorMode === "flipped" ? true :
-                       config.mirrorMode === "unmirrored" ? false :
-                       isMirrored;
-
-    const geom = getRenderedVideoGeometry(video, fw, fh);
+    const geom = getRenderedVideoGeometry(video);
+    const shouldFlip = config.mirrorMode === "flipped";
 
     // ZERO FACES DETECTED: Instant Ghost Box Purge
     if (!face_detected || verdict === "no_face" || !data.faces || data.faces.length === 0) {
@@ -505,22 +490,43 @@
 
     const mappedDetections = detections.map((det, idx) => {
       const box = det.bounding_box || [0, 0, 0, 0];
-      const bx1 = box[0];
-      const by1 = box[1];
-      const bx2 = box[2];
-      const by2 = box[3];
+      const normBox = det.norm_bbox || [
+        (box[0] || 0) / (fw || 320),
+        (box[1] || 0) / (fh || 240),
+        (box[2] || 0) / (fw || 320),
+        (box[3] || 0) / (fh || 240)
+      ];
 
-      // Mirror flip X coordinates when video is mirrored (e.g. Google Meet self-view)
-      const effX1 = shouldFlip ? (fw - bx2) : bx1;
-      const effX2 = shouldFlip ? (fw - bx1) : bx2;
+      let nx1 = Math.max(0.0, Math.min(1.0, normBox[0]));
+      let ny1 = Math.max(0.0, Math.min(1.0, normBox[1]));
+      let nx2 = Math.max(0.0, Math.min(1.0, normBox[2]));
+      let ny2 = Math.max(0.0, Math.min(1.0, normBox[3]));
 
-      const screenX = geom.left + geom.offsetX + (effX1 / fw) * geom.renderW;
-      const screenY = geom.top + geom.offsetY + (by1 / fh) * geom.renderH;
-      const screenW = ((effX2 - effX1) / fw) * geom.renderW;
-      const rawH = ((by2 - by1) / fh) * geom.renderH;
-      const screenH = Math.min(rawH, screenW * 1.30);
+      // Horizontal flip: only when mirrorMode is explicitly "flipped"
+      if (shouldFlip) {
+        const origNx1 = nx1;
+        nx1 = 1.0 - nx2;
+        nx2 = 1.0 - origNx1;
+      }
+
+      const screenX = geom.left + geom.offsetX + (nx1 * geom.renderW);
+      const screenY = geom.top + geom.offsetY + (ny1 * geom.renderH);
+      const screenW = (nx2 - nx1) * geom.renderW;
+      const screenH = (ny2 - ny1) * geom.renderH;
       const centerX = screenX + screenW / 2;
       const centerY = screenY + screenH / 2;
+
+      // Diagnostic logging directly in DevTools console (requested in report)
+      if (idx === 0) {
+        console.log(
+          `[Deepfake Shield BBox] raw: [${box.join(",")}] ` +
+          `norm: [${nx1.toFixed(3)},${ny1.toFixed(3)},${nx2.toFixed(3)},${ny2.toFixed(3)}] ` +
+          `video: ${video.videoWidth}x${video.videoHeight} ` +
+          `elem: ${Math.round(geom.width)}x${Math.round(geom.height)} ` +
+          `screen: [${Math.round(screenX)},${Math.round(screenY)},${Math.round(screenW)},${Math.round(screenH)}] ` +
+          `mode: ${config.mirrorMode}`
+        );
+      }
 
       return { det, targetIndex: idx + 1, screenX, screenY, screenW, screenH, centerX, centerY };
     });
